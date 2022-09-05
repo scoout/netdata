@@ -2,6 +2,7 @@
 
 #include "sqlite_functions.h"
 #include "sqlite_metadata.h"
+#include "../database/rrdcontext.h"
 
 //const char *metadata_sync_config[] = {
 //    "CREATE TABLE IF NOT EXISTS dimension_delete (dimension_id blob, dimension_name text, chart_type_id text, "
@@ -225,6 +226,7 @@ void metadata_database_worker(void *arg)
         RRDSET *st;
         uuid_t  *uuid;
         int rc;
+        RRDINSTANCE_ACQUIRED *ria;
 
         worker_is_idle();
         uv_run(loop, UV_RUN_DEFAULT);
@@ -269,53 +271,56 @@ void metadata_database_worker(void *arg)
                     //info("Metadata timer tick!");
                     break;
                 case METADATA_ADD_CHART:
-                    st = (RRDSET *) cmd.param[0];
-                    update_chart_metadata(st->chart_uuid, st, (char *) cmd.param[1], (char *) cmd.param[2]);
-                    freez(cmd.param[1]);
-                    freez(cmd.param[2]);
-                    DEC(st->state->metadata_update_count);
+//                    st = (RRDSET *) cmd.param[0];
+//                    update_chart_metadata(st->chart_uuid, st, (char *) cmd.param[1], (char *) cmd.param[2]);
+//                    freez(cmd.param[1]);
+//                    freez(cmd.param[2]);
+//                    DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_CHART_FULL:
-                    st = (RRDSET *) cmd.param[0];
+//                    st = (RRDSET *) cmd.param[0];
+                    ria = (RRDINSTANCE_ACQUIRED *) cmd.param[0];
+                    st = get_rrdset_from_rrdinstance(ria);
                     update_chart_metadata(st->chart_uuid, st, (char *) cmd.param[1], (char *) cmd.param[2]);
+                    dictionary_acquired_item_release(ria->rc->rrdinstances, (DICTIONARY_ITEM *) ria);
 
 //                    worker_is_busy(METADATA_ADD_CHART_ACTIVE);
 //                    store_active_chart(st->chart_uuid);
 
-                    worker_is_busy(METADATA_ADD_CHART_HASH);
-                    compute_chart_hash(st, 1);
+                    //worker_is_busy(METADATA_ADD_CHART_HASH);
+                    //compute_chart_hash(st, 1);
 
                     freez(cmd.param[1]);
                     freez(cmd.param[2]);
-                    DEC(st->state->metadata_update_count);
+//                    DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_CHART_LABEL:
                       rrdlabels_walkthrough_read(st->state->chart_labels, store_labels_callback, st->chart_uuid);
-                      DEC(st->state->metadata_update_count);
+//                      DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_CHART_ACTIVE:
                     st = (RRDSET *) cmd.param[0];
                     //store_active_chart(st->chart_uuid);
-                    DEC(st->state->metadata_update_count);
+//                    DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_CHART_HASH:
-                    st = (RRDSET *) cmd.param[0];
-                    compute_chart_hash(st, 1);
-                    DEC(st->state->metadata_update_count);
+//                    st = (RRDSET *) cmd.param[0];
+//                    compute_chart_hash(st, 1);
+//                    DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_DIMENSION:
                     rd = (RRDDIM *) cmd.param[0];
                     //uuid = (uuid_t *) cmd.param[1];
-                    if (rrddim_flag_check(rd, RRDDIM_FLAG_DELETED)) {
-                        info("DELETING dimension during metadata processing --> %p", rd);
-                        freez(rd);
-                        break;
-                    }
-                    rc = sql_store_dimension(&rd->state->metric_uuid, rd->rrdset->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor, rd->algorithm);
+                    //if (rrddim_flag_check(rd, RRDDIM_FLAG_DELETED)) {
+                    //    info("DELETING dimension during metadata processing --> %p", rd);
+                    //    freez(rd);
+                    //    break;
+                    //}
+                    rc = sql_store_dimension(&rd->metric_uuid, rd->rrdset->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor, rd->algorithm);
                     if (unlikely(rc))
                         error_report("Failed to store dimension %s", rd->id);
                     //freez(uuid);
-                    DEC(st->state->metadata_update_count);
+                    //DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_DEL_DIMENSION:
                     uuid = (uuid_t *) cmd.param[0];
@@ -325,17 +330,17 @@ void metadata_database_worker(void *arg)
                 case METADATA_ADD_DIMENSION_ACTIVE:
                     rd = (RRDDIM *) cmd.param[0];
 //                    store_active_dimension(&rd->state->metric_uuid);
-                    DEC(st->state->metadata_update_count);
+//                    DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_DIMENSION_OPTION:
                     rd = (RRDDIM *) cmd.param[0];
                     //info("Adding dimension %s option", rd->id);
                     if (likely(!cmd.param[1]))
-                        (void)sql_set_dimension_option(&rd->state->metric_uuid, NULL);
+                        (void)sql_set_dimension_option(&rd->metric_uuid, NULL);
                     else
-                        (void)sql_set_dimension_option(&rd->state->metric_uuid, (char *) cmd.param[1]);
+                        (void)sql_set_dimension_option(&rd->metric_uuid, (char *) cmd.param[1]);
                     freez(cmd.param[1]);
-                    DEC(st->state->metadata_update_count);
+//                    DEC(st->state->metadata_update_count);
                     break;
                 default:
                     break;

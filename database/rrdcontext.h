@@ -76,6 +76,13 @@ extern void rrdcontext_updated_rrdset_flags(RRDSET *st);
 extern void rrdcontext_collected_rrdset(RRDSET *st);
 
 // ----------------------------------------------------------------------------
+// public API for metadata
+
+extern RRDSET *get_rrdset_from_rrdinstance(RRDINSTANCE_ACQUIRED *ria);
+extern void rrdcontext_hub_stop_streaming_command(void *cmd);
+
+
+// ----------------------------------------------------------------------------
 // public API for ACLK
 
 extern void rrdcontext_hub_checkpoint_command(void *cmd);

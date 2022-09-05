@@ -1348,6 +1348,12 @@ void rrdhost_destroy_rrdcontexts(RRDHOST *host) {
 // ----------------------------------------------------------------------------
 // public API
 
+RRDSET *get_rrdset_from_rrdinstance(RRDINSTANCE_ACQUIRED *ria)
+{
+    return ((RRDINSTANCE *) ria)->rrdset;
+}
+
+
 void rrdcontext_updated_rrddim(RRDDIM *rd) {
     if(unlikely(rrdcontext_enabled == CONFIG_BOOLEAN_NO))
         return;
