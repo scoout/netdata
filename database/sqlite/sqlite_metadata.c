@@ -2,7 +2,6 @@
 
 #include "sqlite_functions.h"
 #include "sqlite_metadata.h"
-#include "../database/rrdcontext.h"
 
 //const char *metadata_sync_config[] = {
 //    "CREATE TABLE IF NOT EXISTS dimension_delete (dimension_id blob, dimension_name text, chart_type_id text, "
@@ -226,7 +225,7 @@ void metadata_database_worker(void *arg)
         RRDSET *st;
         uuid_t  *uuid;
         int rc;
-        RRDINSTANCE_ACQUIRED *ria;
+        //RRDINSTANCE_ACQUIRED *ria;
 
         worker_is_idle();
         uv_run(loop, UV_RUN_DEFAULT);
@@ -279,10 +278,10 @@ void metadata_database_worker(void *arg)
                     break;
                 case METADATA_ADD_CHART_FULL:
 //                    st = (RRDSET *) cmd.param[0];
-                    ria = (RRDINSTANCE_ACQUIRED *) cmd.param[0];
-                    st = get_rrdset_from_rrdinstance(ria);
-                    update_chart_metadata(st->chart_uuid, st, (char *) cmd.param[1], (char *) cmd.param[2]);
-                    dictionary_acquired_item_release(ria->rc->rrdinstances, (DICTIONARY_ITEM *) ria);
+                    //ria = (RRDINSTANCE_ACQUIRED *) cmd.param[0];
+                    //st = get_rrdset_from_rrdinstance(ria);
+                    //update_chart_metadata(st->chart_uuid, st, (char *) cmd.param[1], (char *) cmd.param[2]);
+                    //dictionary_acquired_item_release(ria->rc->rrdinstances, (DICTIONARY_ITEM *) ria);
 
 //                    worker_is_busy(METADATA_ADD_CHART_ACTIVE);
 //                    store_active_chart(st->chart_uuid);
@@ -290,8 +289,8 @@ void metadata_database_worker(void *arg)
                     //worker_is_busy(METADATA_ADD_CHART_HASH);
                     //compute_chart_hash(st, 1);
 
-                    freez(cmd.param[1]);
-                    freez(cmd.param[2]);
+                    //freez(cmd.param[1]);
+                    //freez(cmd.param[2]);
 //                    DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_CHART_LABEL:
