@@ -73,8 +73,8 @@ extern int sql_store_chart(
     uuid_t *chart_uuid, uuid_t *host_uuid, const char *type, const char *id, const char *name, const char *family,
     const char *context, const char *title, const char *units, const char *plugin, const char *module, long priority,
     int update_every, int chart_type, int memory_mode, long history_entries);
-extern int sql_store_dimension(uuid_t *dim_uuid, uuid_t *chart_uuid, const char *id, const char *name, collected_number multiplier,
-                               collected_number divisor, int algorithm);
+//extern int sql_store_dimension(uuid_t *dim_uuid, uuid_t *chart_uuid, const char *id, const char *name, collected_number multiplier,
+//                               collected_number divisor, int algorithm);
 
 extern int find_dimension_uuid(RRDSET *st, RRDDIM *rd, uuid_t *store_uuid);
 

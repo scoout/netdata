@@ -57,13 +57,9 @@ enum metadata_database_opcode {
     METADATA_DATABASE_TIMER,
     METADATA_ADD_CHART,
     METADATA_ADD_CHART_LABEL,
-    METADATA_ADD_CHART_ACTIVE,
-    METADATA_ADD_CHART_HASH,
     METADATA_ADD_DIMENSION,
     METADATA_DEL_DIMENSION,
-    METADATA_ADD_DIMENSION_ACTIVE,
     METADATA_ADD_DIMENSION_OPTION,
-    METADATA_ADD_CHART_FULL,
     // leave this last
     // we need it to check for worker utilization
     METADATA_MAX_ENUMERATIONS_DEFINED
@@ -73,7 +69,6 @@ enum metadata_database_opcode {
 
 struct metadata_database_cmd {
     enum metadata_database_opcode opcode;
-//    void *data;
     void *param[MAX_PARAM_LIST];
     struct metadata_completion *completion;
 };
@@ -102,4 +97,6 @@ struct metadata_database_worker_config {
 void metadata_sync_init(struct metadata_database_worker_config *metasync_worker);
 //int metadata_database_enq_cmd_noblock(struct metadata_database_worker_config *wc, struct metadata_database_cmd *cmd);
 void metadata_database_enq_cmd(struct metadata_database_worker_config *wc, struct metadata_database_cmd *cmd);
+void queue_dimension_update_metadata(RRDDIM *rd);
+void queue_chart_update_metadata(RRDSET *st);
 #endif //NETDATA_SQLITE_METADATA_H

@@ -20,6 +20,227 @@
 //    NULL,
 //};
 
+
+// Metadata store functions
+/*
+ * Store a chart in the database
+ */
+
+int sql_store_chart(
+    uuid_t *chart_uuid, uuid_t *host_uuid, const char *type, const char *id, const char *name, const char *family,
+    const char *context, const char *title, const char *units, const char *plugin, const char *module, long priority,
+    int update_every, int chart_type, int memory_mode, long history_entries)
+{
+    static __thread sqlite3_stmt *res = NULL;
+    int rc, param = 0;
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+            return 0;
+        error_report("Database has not been initialized");
+        return 1;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db_meta, SQL_STORE_CHART, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to store chart, rc = %d", rc);
+            return 1;
+        }
+    }
+
+    param++;
+    rc = sqlite3_bind_blob(res, 1, chart_uuid, sizeof(*chart_uuid), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_blob(res, 2, host_uuid, sizeof(*host_uuid), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 3, type, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 4, id, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    if (name && *name)
+        rc = sqlite3_bind_text(res, 5, name, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 5);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 6, family, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 7, context, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 8, title, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 9, units, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 10, plugin, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_text(res, 11, module, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 12, priority);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 13, update_every);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 14, chart_type);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 15, memory_mode);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 16, history_entries);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to store chart, rc = %d", rc);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in chart store function, rc = %d", rc);
+
+    return 0;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to store chart, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in chart store function, rc = %d", rc);
+    return 1;
+}
+
+/*
+ * Store a dimension
+ */
+static int sql_store_dimension(
+    uuid_t *dim_uuid, uuid_t *chart_uuid, const char *id, const char *name, collected_number multiplier,
+    collected_number divisor, int algorithm)
+{
+    static __thread sqlite3_stmt *res = NULL;
+    int rc;
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+            return 0;
+        error_report("Database has not been initialized");
+        return 1;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db_meta, SQL_STORE_DIMENSION, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to store dimension, rc = %d", rc);
+            return 1;
+        }
+    }
+
+    rc = sqlite3_bind_blob(res, 1, dim_uuid, sizeof(*dim_uuid), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_blob(res, 2, chart_uuid, sizeof(*chart_uuid), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_text(res, 3, id, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_text(res, 4, name, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_int(res, 5, multiplier);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_int(res, 6, divisor);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_int(res, 7, algorithm);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to store dimension, rc = %d", rc);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in store dimension, rc = %d", rc);
+    return 0;
+
+bind_fail:
+    error_report("Failed to bind parameter to store dimension, rc = %d", rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in store dimension, rc = %d", rc);
+    return 1;
+}
+
+
+int update_chart_metadata(uuid_t *chart_uuid, RRDSET *st, const char *id, const char *name)
+{
+    int rc;
+
+    if (unlikely(!db_meta) && default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+        return 0;
+
+    rc = sql_store_chart(
+        chart_uuid, &st->rrdhost->host_uuid, rrdset_type(st), id, name,
+        rrdset_family(st), rrdset_context(st), rrdset_title(st), rrdset_units(st),
+        rrdset_plugin_name(st), rrdset_module_name(st),
+        st->priority, st->update_every, st->chart_type,
+        st->rrd_memory_mode, st->entries);
+
+    return rc;
+}
+
+
+
+
 uv_mutex_t metadata_async_lock;
 
 void metadata_database_init_cmd_queue(struct metadata_database_worker_config *wc)
@@ -119,23 +340,6 @@ static void async_cb(uv_async_t *handle)
 #define TIMER_INITIAL_PERIOD_MS (1000)
 #define TIMER_REPEAT_PERIOD_MS (1000)
 
-// 120000 /10000
-//static void timer_cb1(uv_timer_t* handle)
-//{
-//    uv_stop(handle->loop);
-//    uv_update_time(handle->loop);
-//
-//    struct metadata_database_worker_config *wc = handle->data;
-//    wc->wakeup_now = 1;
-////    wc->max_batch += 32;
-////    if (wc->max_batch > 256)
-////        wc->max_batch = 256;
-//    //    struct metadata_database_cmd cmd;
-//    //    memset(&cmd, 0, sizeof(cmd));
-//    //    cmd.opcode = METADATA_DATABASE_TIMER;
-//    //    metadata_database_enq_cmd_noblock(wc, &cmd);
-//}
-
 static void timer_cb(uv_timer_t* handle)
 {
     uv_stop(handle->loop);
@@ -152,7 +356,6 @@ static void timer_cb(uv_timer_t* handle)
 
 #define MAX_CMD_BATCH_SIZE (32)
 
-
 static int store_labels_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
     sql_store_chart_label((uuid_t *)data, (int)ls, (char *) name, (char *) value);
     return 1;
@@ -165,11 +368,8 @@ void metadata_database_worker(void *arg)
     worker_register_job_name(METADATA_DATABASE_TIMER,       "timer");
     worker_register_job_name(METADATA_ADD_CHART,            "add chart");
     worker_register_job_name(METADATA_ADD_CHART_LABEL,      "add chart label");
-    worker_register_job_name(METADATA_ADD_CHART_ACTIVE,     "add chart active");
-    worker_register_job_name(METADATA_ADD_CHART_HASH,       "add chart hash");
     worker_register_job_name(METADATA_ADD_DIMENSION,        "add dimension");
     worker_register_job_name(METADATA_DEL_DIMENSION,        "delete dimension");
-    worker_register_job_name(METADATA_ADD_DIMENSION_ACTIVE, "add dimension active");
     worker_register_job_name(METADATA_ADD_DIMENSION_OPTION, "dimension option");
 
     struct metadata_database_worker_config *wc = arg;
@@ -225,14 +425,13 @@ void metadata_database_worker(void *arg)
         RRDSET *st;
         uuid_t  *uuid;
         int rc;
-        //RRDINSTANCE_ACQUIRED *ria;
+        DICTIONARY_ITEM *dict_item;
 
         worker_is_idle();
         uv_run(loop, UV_RUN_DEFAULT);
 
         /* wait for commands */
         cmd_batch_size = 0;
-        //db_execute("BEGIN TRANSACTION;");
         do {
             if (unlikely(cmd_batch_size >= wc->max_batch))
                 break;
@@ -255,10 +454,7 @@ void metadata_database_worker(void *arg)
             }
 
             if (likely(opcode != METADATA_DATABASE_NOOP)) {
-                if (opcode == METADATA_ADD_CHART_FULL)
-                    worker_is_busy(METADATA_ADD_CHART);
-                else
-                    worker_is_busy(opcode);
+                worker_is_busy(opcode);
             }
 
             switch (opcode) {
@@ -270,76 +466,37 @@ void metadata_database_worker(void *arg)
                     //info("Metadata timer tick!");
                     break;
                 case METADATA_ADD_CHART:
-//                    st = (RRDSET *) cmd.param[0];
-//                    update_chart_metadata(st->chart_uuid, st, (char *) cmd.param[1], (char *) cmd.param[2]);
-//                    freez(cmd.param[1]);
-//                    freez(cmd.param[2]);
-//                    DEC(st->state->metadata_update_count);
-                    break;
-                case METADATA_ADD_CHART_FULL:
-//                    st = (RRDSET *) cmd.param[0];
-                    //ria = (RRDINSTANCE_ACQUIRED *) cmd.param[0];
-                    //st = get_rrdset_from_rrdinstance(ria);
-                    //update_chart_metadata(st->chart_uuid, st, (char *) cmd.param[1], (char *) cmd.param[2]);
-                    //dictionary_acquired_item_release(ria->rc->rrdinstances, (DICTIONARY_ITEM *) ria);
-
-//                    worker_is_busy(METADATA_ADD_CHART_ACTIVE);
-//                    store_active_chart(st->chart_uuid);
-
-                    //worker_is_busy(METADATA_ADD_CHART_HASH);
-                    //compute_chart_hash(st, 1);
-
-                    //freez(cmd.param[1]);
-                    //freez(cmd.param[2]);
-//                    DEC(st->state->metadata_update_count);
+                    dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
+                    st = (RRDSET *) dictionary_acquired_item_value(dict_item);
+                    info("METADATA: Storing CHART %s", string2str(st->id));
+                    update_chart_metadata(st->chart_uuid, st, string2str(st->id), string2str(st->name));
+                    dictionary_acquired_item_release(st->rrdhost->rrdset_root_index, dict_item);
                     break;
                 case METADATA_ADD_CHART_LABEL:
                       rrdlabels_walkthrough_read(st->state->chart_labels, store_labels_callback, st->chart_uuid);
-//                      DEC(st->state->metadata_update_count);
-                    break;
-                case METADATA_ADD_CHART_ACTIVE:
-                    st = (RRDSET *) cmd.param[0];
-                    //store_active_chart(st->chart_uuid);
-//                    DEC(st->state->metadata_update_count);
-                    break;
-                case METADATA_ADD_CHART_HASH:
-//                    st = (RRDSET *) cmd.param[0];
-//                    compute_chart_hash(st, 1);
-//                    DEC(st->state->metadata_update_count);
                     break;
                 case METADATA_ADD_DIMENSION:
-                    rd = (RRDDIM *) cmd.param[0];
-                    //uuid = (uuid_t *) cmd.param[1];
-                    //if (rrddim_flag_check(rd, RRDDIM_FLAG_DELETED)) {
-                    //    info("DELETING dimension during metadata processing --> %p", rd);
-                    //    freez(rd);
-                    //    break;
-                    //}
-                    rc = sql_store_dimension(&rd->metric_uuid, rd->rrdset->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor, rd->algorithm);
+                    dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
+                    rd = (RRDDIM *) dictionary_acquired_item_value(dict_item);
+                    info("METADATA: Storing DIM %s", string2str(rd->id));
+                    rc = sql_store_dimension(&rd->metric_uuid, rd->rrdset->chart_uuid, string2str(rd->id),
+                                             string2str(rd->name), rd->multiplier, rd->divisor, rd->algorithm);
                     if (unlikely(rc))
-                        error_report("Failed to store dimension %s", rd->id);
-                    //freez(uuid);
-                    //DEC(st->state->metadata_update_count);
+                        error_report("Failed to store dimension %s", string2str(rd->id));
+                    dictionary_acquired_item_release(rd->rrdset->rrddim_root_index, dict_item);
                     break;
                 case METADATA_DEL_DIMENSION:
                     uuid = (uuid_t *) cmd.param[0];
                     delete_dimension_uuid(uuid);
                     freez(uuid);
                     break;
-                case METADATA_ADD_DIMENSION_ACTIVE:
-                    rd = (RRDDIM *) cmd.param[0];
-//                    store_active_dimension(&rd->state->metric_uuid);
-//                    DEC(st->state->metadata_update_count);
-                    break;
                 case METADATA_ADD_DIMENSION_OPTION:
                     rd = (RRDDIM *) cmd.param[0];
-                    //info("Adding dimension %s option", rd->id);
                     if (likely(!cmd.param[1]))
                         (void)sql_set_dimension_option(&rd->metric_uuid, NULL);
                     else
                         (void)sql_set_dimension_option(&rd->metric_uuid, (char *) cmd.param[1]);
                     freez(cmd.param[1]);
-//                    DEC(st->state->metadata_update_count);
                     break;
                 default:
                     break;
@@ -408,4 +565,28 @@ void metadata_sync_init(struct metadata_database_worker_config *wc)
     fatal_assert(0 == uv_thread_create(&(wc->thread), metadata_database_worker, wc));
     info("SQLite metadata sync initialization completed");
     return;
+}
+
+
+// Helpers
+static inline void _queue_metadata_cmd(enum metadata_database_opcode opcode, void *param0)
+{
+    struct metadata_database_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = opcode;
+    cmd.param[0] = param0;
+    metadata_database_enq_cmd(&metasync_worker, &cmd);
+}
+
+// Public
+void queue_chart_update_metadata(RRDSET *st)
+{
+    DICTIONARY_ITEM *acquired_st = dictionary_get_and_acquire_item(st->rrdhost->rrdset_root_index, string2str(st->id));
+    _queue_metadata_cmd(METADATA_ADD_CHART, acquired_st);
+}
+
+void queue_dimension_update_metadata(RRDDIM *rd)
+{
+    DICTIONARY_ITEM *acquired_rd = dictionary_get_and_acquire_item(rd->rrdset->rrddim_root_index, string2str(rd->id));
+    _queue_metadata_cmd(METADATA_ADD_DIMENSION, acquired_rd);
 }

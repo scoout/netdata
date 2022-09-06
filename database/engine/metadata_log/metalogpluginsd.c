@@ -89,7 +89,7 @@ PARSER_RC metalog_pluginsd_dimension_action(void *user, RRDSET *st, char *id, ch
         return PARSER_RC_OK;
     }
 
-    (void) sql_store_dimension(&state->uuid, &state->chart_uuid, id, name, multiplier, divisor, algorithm_type);
+    //(void) sql_store_dimension(&state->uuid, &state->chart_uuid, id, name, multiplier, divisor, algorithm_type);
     uuid_clear(state->uuid); /* Consume UUID */
 
     return PARSER_RC_OK;
