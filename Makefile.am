@@ -557,16 +557,6 @@ JudyLTables.c: $(abs_top_srcdir)/libnetdata/libjudy/src/JudyL/JudyLTablesGen.c $
         database/engine/pagecache.h \
         database/engine/rrdenglocking.c \
         database/engine/rrdenglocking.h \
-        database/engine/metadata_log/metadatalog.h \
-        database/engine/metadata_log/metadatalogapi.c \
-        database/engine/metadata_log/metadatalogapi.h \
-        database/engine/metadata_log/logfile.h \
-        database/engine/metadata_log/logfile.c \
-        database/engine/metadata_log/metadatalogprotocol.h \
-        database/engine/metadata_log/metalogpluginsd.c \
-        database/engine/metadata_log/metalogpluginsd.h \
-        database/engine/metadata_log/compaction.c \
-        database/engine/metadata_log/compaction.h \
         $(NULL)
 endif
 

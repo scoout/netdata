@@ -3,7 +3,7 @@
 #include "sqlite_functions.h"
 #include "sqlite_db_migration.h"
 
-#define DB_METADATA_VERSION 5
+#define DB_METADATA_VERSION 6
 
 const char *database_config[] = {
     "CREATE TABLE IF NOT EXISTS host(host_id BLOB PRIMARY KEY, hostname TEXT NOT NULL, "
@@ -658,76 +658,76 @@ void migrate_localhost(uuid_t *host_uuid)
 
 }
 
-int sql_store_host(
-    uuid_t *host_uuid, const char *hostname, const char *registry_hostname, int update_every, const char *os,
-    const char *tzone, const char *tags, int hops)
-{
-    static __thread sqlite3_stmt *res = NULL;
-    int rc;
-
-    if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
-            return 0;
-        error_report("Database has not been initialized");
-        return 1;
-    }
-
-    if (unlikely((!res))) {
-        rc = prepare_statement(db_meta, SQL_STORE_HOST, &res);
-        if (unlikely(rc != SQLITE_OK)) {
-            error_report("Failed to prepare statement to store host, rc = %d", rc);
-            return 1;
-        }
-    }
-
-    rc = sqlite3_bind_blob(res, 1, host_uuid, sizeof(*host_uuid), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_text(res, 2, hostname, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_text(res, 3, registry_hostname, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int(res, 4, update_every);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_text(res, 5, os, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_text(res, 6, tzone, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_text(res, 7, tags, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int(res, 8, hops);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    int store_rc = sqlite3_step_monitored(res);
-    if (unlikely(store_rc != SQLITE_DONE))
-        error_report("Failed to store host %s, rc = %d", hostname, rc);
-
-    rc = sqlite3_reset(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to reset statement to store host %s, rc = %d", hostname, rc);
-
-    return !(store_rc == SQLITE_DONE);
-bind_fail:
-    error_report("Failed to bind parameter to store host %s, rc = %d", hostname, rc);
-    rc = sqlite3_reset(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to reset statement to store host %s, rc = %d", hostname, rc);
-    return 1;
-}
+//int sql_store_host(
+//    uuid_t *host_uuid, const char *hostname, const char *registry_hostname, int update_every, const char *os,
+//    const char *tzone, const char *tags, int hops)
+//{
+//    static __thread sqlite3_stmt *res = NULL;
+//    int rc;
+//
+//    if (unlikely(!db_meta)) {
+//        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+//            return 0;
+//        error_report("Database has not been initialized");
+//        return 1;
+//    }
+//
+//    if (unlikely((!res))) {
+//        rc = prepare_statement(db_meta, SQL_STORE_HOST, &res);
+//        if (unlikely(rc != SQLITE_OK)) {
+//            error_report("Failed to prepare statement to store host, rc = %d", rc);
+//            return 1;
+//        }
+//    }
+//
+//    rc = sqlite3_bind_blob(res, 1, host_uuid, sizeof(*host_uuid), SQLITE_STATIC);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    rc = sqlite3_bind_text(res, 2, hostname, -1, SQLITE_STATIC);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    rc = sqlite3_bind_text(res, 3, registry_hostname, -1, SQLITE_STATIC);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    rc = sqlite3_bind_int(res, 4, update_every);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    rc = sqlite3_bind_text(res, 5, os, -1, SQLITE_STATIC);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    rc = sqlite3_bind_text(res, 6, tzone, -1, SQLITE_STATIC);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    rc = sqlite3_bind_text(res, 7, tags, -1, SQLITE_STATIC);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    rc = sqlite3_bind_int(res, 8, hops);
+//    if (unlikely(rc != SQLITE_OK))
+//        goto bind_fail;
+//
+//    int store_rc = sqlite3_step_monitored(res);
+//    if (unlikely(store_rc != SQLITE_DONE))
+//        error_report("Failed to store host %s, rc = %d", hostname, rc);
+//
+//    rc = sqlite3_reset(res);
+//    if (unlikely(rc != SQLITE_OK))
+//        error_report("Failed to reset statement to store host %s, rc = %d", hostname, rc);
+//
+//    return !(store_rc == SQLITE_DONE);
+//bind_fail:
+//    error_report("Failed to bind parameter to store host %s, rc = %d", hostname, rc);
+//    rc = sqlite3_reset(res);
+//    if (unlikely(rc != SQLITE_OK))
+//        error_report("Failed to reset statement to store host %s, rc = %d", hostname, rc);
+//    return 1;
+//}
 
 //
 // Support for archived charts

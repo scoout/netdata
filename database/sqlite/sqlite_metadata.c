@@ -1075,7 +1075,8 @@ static void metadata_database_worker(void *arg)
                     break;
                 case METADATA_DEL_DIMENSION:
                     uuid = (uuid_t *) cmd.param[0];
-                    delete_dimension_uuid(uuid);
+                    if (likely(dimension_can_be_deleted(uuid)))
+                        delete_dimension_uuid(uuid);
                     freez(uuid);
                     break;
                 case METADATA_ADD_DIMENSION_OPTION:

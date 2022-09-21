@@ -16,18 +16,6 @@ void sanity_check(void) {
 }
 
 const char *aclk_sync_config[] = {
-    "CREATE TABLE IF NOT EXISTS dimension_delete (dimension_id blob, dimension_name text, chart_type_id text, "
-    "dim_id blob, chart_id blob, host_id blob, date_created);",
-
-    "CREATE INDEX IF NOT EXISTS ind_h1 ON dimension_delete (host_id);",
-
-    "CREATE TRIGGER IF NOT EXISTS tr_dim_del AFTER DELETE ON dimension BEGIN INSERT INTO dimension_delete "
-    "(dimension_id, dimension_name, chart_type_id, dim_id, chart_id, host_id, date_created)"
-    " select old.id, old.name, c.type||\".\"||c.id, old.dim_id, old.chart_id, c.host_id, unixepoch() FROM"
-    " chart c WHERE c.chart_id = old.chart_id; END;",
-
-    "DELETE FROM dimension_delete WHERE host_id NOT IN"
-    " (SELECT host_id FROM host) OR unixepoch() - date_created > 604800;",
 
     NULL,
 };
