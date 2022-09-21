@@ -12,6 +12,10 @@
 extern sqlite3 *db_meta;
 
 #define METADATA_DATABASE_CMD_Q_MAX_SIZE (100000)
+#define METADATA_MAINTENANCE_FIRST_CHECK (60)
+#define METADATA_MAINTENANCE_RETRY (60)
+#define METADATA_MAINTENANCE_INTERVAL (3600)
+#define MAX_METADATA_CLEANUP (500)
 
 struct metadata_completion {
     uv_mutex_t mutex;
@@ -50,7 +54,7 @@ static inline void metadata_complete(struct metadata_completion *p)
     uv_cond_broadcast(&p->cond);
 }
 
-extern uv_mutex_t metadata_async_lock;
+//extern uv_mutex_t metadata_async_lock;
 
 enum metadata_database_opcode {
     METADATA_DATABASE_NOOP = 0,
@@ -64,6 +68,7 @@ enum metadata_database_opcode {
     METADATA_ADD_HOST_INFO,
     METADATA_STORE_CLAIM_ID,
     METADATA_STORE_HOST_LABELS,
+    METADATA_MAINTENANCE,
     // leave this last
     // we need it to check for worker utilization
     METADATA_MAX_ENUMERATIONS_DEFINED
@@ -92,6 +97,9 @@ struct metadata_database_worker_config {
     int is_shutting_down;
     uv_loop_t *loop;
     uv_async_t async;
+    time_t check_metadata_after;
+    int metadata_cleanup_running;
+    uint64_t row_id;
     /* FIFO command queue */
     uv_mutex_t cmd_mutex;
     uv_cond_t cmd_cond;
