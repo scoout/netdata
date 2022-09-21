@@ -58,6 +58,7 @@ void netdata_cleanup_and_exit(int ret) {
         for(int tier = 0; tier < storage_tiers ; tier++)
             rrdeng_prepare_exit(multidb_ctx[tier]);
 #endif
+        metadata_sync_exit();
         rrdhost_free_all();
 #ifdef ENABLE_DBENGINE
         for(int tier = 0; tier < storage_tiers ; tier++)

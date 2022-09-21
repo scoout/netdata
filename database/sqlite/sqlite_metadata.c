@@ -465,6 +465,10 @@ bind_fail:
  * Store a chart in the database
  */
 
+#define SQL_STORE_CHART "insert or replace into chart (chart_id, host_id, type, id, " \
+    "name, family, context, title, unit, plugin, module, priority, update_every , chart_type , memory_mode , " \
+    "history_entries) values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16);"
+
 static int sql_store_chart(
     uuid_t *chart_uuid, uuid_t *host_uuid, const char *type, const char *id, const char *name, const char *family,
     const char *context, const char *title, const char *units, const char *plugin, const char *module, long priority,
@@ -592,6 +596,9 @@ bind_fail:
 /*
  * Store a dimension
  */
+
+#define SQL_STORE_DIMENSION "INSERT OR REPLACE INTO dimension (dim_id, chart_id, id, name, multiplier, divisor , algorithm) " \
+        "VALUES (@dim_id, @chart_id, @id, @name, @multiplier, @divisor, @algorithm);"
 static int sql_store_dimension(
     uuid_t *dim_uuid, uuid_t *chart_uuid, const char *id, const char *name, collected_number multiplier,
     collected_number divisor, int algorithm)
@@ -835,7 +842,7 @@ static struct metadata_database_cmd metadata_database_deq_cmd(struct metadata_da
 
     uv_mutex_lock(&wc->cmd_mutex);
     queue_size = wc->queue_size;
-    if (queue_size == 0 || wc->is_shutting_down) {
+    if (queue_size == 0) {
         memset(&ret, 0, sizeof(ret));
         ret.opcode = METADATA_DATABASE_NOOP;
         ret.completion = NULL;
@@ -1007,7 +1014,8 @@ static void metadata_database_worker(void *arg)
     wc->check_metadata_after = wc->startup_time + METADATA_MAINTENANCE_FIRST_CHECK;
 
     unsigned int max_commands_in_queue = 0;
-    while (likely(!netdata_exit)) {
+    int shutdown = 0;
+    while (shutdown == 0 || wc->metadata_cleanup_running) {
         RRDDIM *rd;
         RRDSET *st;
         RRDHOST *host;
@@ -1025,8 +1033,10 @@ static void metadata_database_worker(void *arg)
                 break;
             cmd = metadata_database_deq_cmd(wc);
 
-            if (netdata_exit)
-                break;
+            if (opcode == METADATA_DATABASE_NOOP && wc->is_shutting_down) {
+                shutdown = 1;
+                continue;
+            }
 
             opcode = cmd.opcode;
             ++cmd_batch_size;
@@ -1138,6 +1148,14 @@ static void metadata_database_worker(void *arg)
                         stop_metadata_maintenance_run();
                     }
                     break;
+                case METADATA_SYNC_SHUTDOWN:
+                    info("METADATA is shutting down");
+                    shutdown = 1;
+                    wc->is_shutting_down = 1;
+//                    if (!uv_timer_stop(&timer_req))
+//                        uv_close((uv_handle_t *)&timer_req, NULL);
+                    metadata_complete(cmd.completion);
+                    break;
                 default:
                     break;
             }
@@ -1182,6 +1200,22 @@ error_after_async_init:
 error_after_loop_init:
     freez(loop);
     worker_unregister();
+}
+
+void metadata_sync_exit(void)
+{
+    struct metadata_completion compl;
+    init_metadata_completion(&compl);
+
+    struct metadata_database_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = METADATA_SYNC_SHUTDOWN;
+    cmd.completion = &compl;
+    metadata_database_enq_cmd(&metasync_worker, &cmd);
+
+    /* wait for metadata thread to shutdown */
+    wait_for_metadata_completion(&compl);
+    destroy_metadata_completion(&compl);
 }
 
 // -------------------------------------------------------------

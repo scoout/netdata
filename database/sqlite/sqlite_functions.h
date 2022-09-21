@@ -27,18 +27,8 @@ typedef enum db_check_action_type {
 #define SQL_MAX_RETRY (100)
 #define SQLITE_INSERT_DELAY (50)        // Insert delay in case of lock
 
-#define SQL_STORE_HOST "insert or replace into host (host_id,hostname,registry_hostname,update_every,os,timezone,tags, hops) " \
-        "values (?1,?2,?3,?4,?5,?6,?7,?8);"
-
-#define SQL_STORE_CHART "insert or replace into chart (chart_id, host_id, type, id, " \
-    "name, family, context, title, unit, plugin, module, priority, update_every , chart_type , memory_mode , " \
-    "history_entries) values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16);"
-
 #define SQL_FIND_CHART_UUID                                                                                            \
     "select chart_id from chart where host_id = @host and type=@type and id=@id and (name is null or name=@name) and chart_id is not null;"
-
-#define SQL_STORE_DIMENSION                                                                                           \
-    "INSERT OR REPLACE into dimension (dim_id, chart_id, id, name, multiplier, divisor , algorithm) values (?0001,?0002,?0003,?0004,?0005,?0006,?0007);"
 
 #define SQL_FIND_DIMENSION_UUID \
     "select dim_id from dimension where chart_id=@chart and id=@id and name=@name and length(dim_id)=16;"

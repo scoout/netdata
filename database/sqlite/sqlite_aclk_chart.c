@@ -209,68 +209,8 @@ static inline int aclk_upd_dimension_event(struct aclk_database_worker_config *w
 
 void aclk_process_dimension_deletion(struct aclk_database_worker_config *wc, struct aclk_database_cmd cmd)
 {
-    int rc = 0;
-    sqlite3_stmt *res = NULL;
-
-    if (!aclk_connected)
-        return;
-
-    if (unlikely(!db_meta))
-        return;
-
-    uuid_t host_id;
-    if (uuid_parse(wc->host_guid, host_id))
-        return;
-
-    char *claim_id = get_agent_claimid();
-    if (!claim_id)
-        return;
-
-    rc = sqlite3_prepare_v2(
-        db_meta,
-        "DELETE FROM dimension_delete where host_id = @host_id "
-        "RETURNING dimension_id, dimension_name, chart_type_id, dim_id LIMIT 10;",
-        -1,
-        &res,
-        0);
-
-    if (rc != SQLITE_OK) {
-        error_report("Failed to prepare statement when trying to delete dimension deletes");
-        freez(claim_id);
-        return;
-    }
-
-    rc = sqlite3_bind_blob(res, 1, &host_id, sizeof(host_id), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    unsigned count = 0;
-    while (sqlite3_step_monitored(res) == SQLITE_ROW) {
-        (void) aclk_upd_dimension_event(
-            wc,
-            claim_id,
-            (uuid_t *)sqlite3_column_text(res, 3),
-            (const char *)sqlite3_column_text(res, 0),
-            (const char *)sqlite3_column_text(res, 1),
-            (const char *)sqlite3_column_text(res, 2),
-            0,
-            0,
-            NULL);
-        count++;
-    }
-
-    if (count) {
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.opcode = ACLK_DATABASE_DIM_DELETION;
-        if (aclk_database_enq_cmd_noblock(wc, &cmd))
-            info("Failed to queue a dimension deletion message");
-    }
-
-bind_fail:
-    rc = sqlite3_finalize(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to finalize statement when adding dimension deletion events, rc = %d", rc);
-    freez(claim_id);
+    UNUSED(wc);
+    UNUSED(cmd);
     return;
 }
 

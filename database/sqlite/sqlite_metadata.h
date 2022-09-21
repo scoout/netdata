@@ -69,6 +69,7 @@ enum metadata_database_opcode {
     METADATA_STORE_CLAIM_ID,
     METADATA_STORE_HOST_LABELS,
     METADATA_MAINTENANCE,
+    METADATA_SYNC_SHUTDOWN,
     // leave this last
     // we need it to check for worker utilization
     METADATA_MAX_ENUMERATIONS_DEFINED
@@ -117,4 +118,5 @@ void queue_host_update_info(const char *machine_guid);
 void queue_delete_dimension_uuid(uuid_t *uuid);
 void queue_store_claim_id(uuid_t *host_uuid, uuid_t *claim_uuid);
 void queue_store_host_labels(const char *machine_guid);
+void metadata_sync_exit(void);
 #endif //NETDATA_SQLITE_METADATA_H
