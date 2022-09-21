@@ -204,7 +204,7 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
         if (tiers_available == tiers_said_yes && tiers_said_yes && rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
             /* This metric has no data and no references */
-            delete_dimension_uuid(&rd->metric_uuid);
+            queue_delete_dimension_uuid(&rd->metric_uuid);
         }
     }
 
@@ -278,9 +278,11 @@ static void rrddim_react_callback(const DICTIONARY_ITEM *item __maybe_unused, vo
     RRDDIM *rd = rrddim;
     RRDSET *st = ctr->st;
 
+    if(ctr->react_action & (RRDDIM_REACT_UPDATED | RRDDIM_REACT_NEW)) {
+        queue_dimension_update_metadata(rd);
+    }
+
     if(ctr->react_action == RRDDIM_REACT_UPDATED) {
-        debug(D_METADATALOG, "DIMENSION [%s] metadata updated", rrddim_id(rd));
-        (void)sql_store_dimension(&rd->metric_uuid, &rd->rrdset->chart_uuid, rrddim_id(rd), rrddim_name(rd), rd->multiplier, rd->divisor, rd->algorithm);
 #ifdef ENABLE_ACLK
         queue_dimension_to_aclk(rd, calc_dimension_liveness(rd, now_realtime_sec()));
 #endif
@@ -502,11 +504,12 @@ int rrddim_hide(RRDSET *st, const char *id) {
         error("Cannot find dimension with id '%s' on stats '%s' (%s) on host '%s'.", id, rrdset_name(st), rrdset_id(st), rrdhost_hostname(host));
         return 1;
     }
-    if (!rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN))
-        (void)sql_set_dimension_option(&rd->metric_uuid, "hidden");
+    if (!rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN)) {
+        rrddim_flag_set(rd, RRDDIM_FLAG_META_HIDDEN);
+        queue_dimension_update_flags(rd);
+    }
 
     rrddim_option_set(rd, RRDDIM_OPTION_HIDDEN);
-    rrddim_flag_set(rd, RRDDIM_FLAG_META_HIDDEN);
     rrdcontext_updated_rrddim_flags(rd);
     return 0;
 }
@@ -520,11 +523,12 @@ int rrddim_unhide(RRDSET *st, const char *id) {
         error("Cannot find dimension with id '%s' on stats '%s' (%s) on host '%s'.", id, rrdset_name(st), rrdset_id(st), rrdhost_hostname(host));
         return 1;
     }
-    if (rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN))
-        (void)sql_set_dimension_option(&rd->metric_uuid, NULL);
+    if (rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN)) {
+        rrddim_flag_clear(rd, RRDDIM_FLAG_META_HIDDEN);
+        queue_dimension_update_flags(rd);
+    }
 
     rrddim_option_clear(rd, RRDDIM_OPTION_HIDDEN);
-    rrddim_flag_clear(rd, RRDDIM_FLAG_META_HIDDEN);
     rrdcontext_updated_rrddim_flags(rd);
     return 0;
 }

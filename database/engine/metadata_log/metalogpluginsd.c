@@ -29,17 +29,18 @@ PARSER_RC metalog_pluginsd_host_action(
         return PARSER_RC_OK;
     }
 
-    if (likely(!uuid_parse(machine_guid, state->host_uuid))) {
-        int rc = sql_store_host(&state->host_uuid, hostname, registry_hostname, update_every, os, timezone, tags, 1);
-        if (unlikely(rc)) {
-            errno = 0;
-            error("Failed to store host %s with UUID %s in the database", hostname, machine_guid);
-        }
-    }
-    else {
-        errno = 0;
-        error("Host machine GUID %s is not valid", machine_guid);
-    }
+    // TODO: Fix or remove
+//    if (likely(!uuid_parse(machine_guid, state->host_uuid))) {
+//        int rc = sql_store_host(&state->host_uuid, hostname, registry_hostname, update_every, os, timezone, tags, 1);
+//        if (unlikely(rc)) {
+//            errno = 0;
+//            error("Failed to store host %s with UUID %s in the database", hostname, machine_guid);
+//        }
+//    }
+//    else {
+//        errno = 0;
+//        error("Host machine GUID %s is not valid", machine_guid);
+//    }
 
     return PARSER_RC_OK;
 }
@@ -59,10 +60,11 @@ PARSER_RC metalog_pluginsd_chart_action(void *user, char *type, char *id, char *
     }
     uuid_copy(state->chart_uuid, state->uuid);
     uuid_clear(state->uuid); /* Consume UUID */
-    (void) sql_store_chart(&state->chart_uuid, &state->host_uuid,
-        type, id, name, family, context, title, units,
-        plugin, module, priority, update_every,
-        chart_type, RRD_MEMORY_MODE_DBENGINE, host ? host->rrd_history_entries : 1);
+    // TODO: FIX OR REMOVE
+//    (void) sql_store_chart(&state->chart_uuid, &state->host_uuid,
+//        type, id, name, family, context, title, units,
+//        plugin, module, priority, update_every,
+//        chart_type, RRD_MEMORY_MODE_DBENGINE, host ? host->rrd_history_entries : 1);
     ((PARSER_USER_OBJECT *)user)->st_exists = 1;
 
     return PARSER_RC_OK;

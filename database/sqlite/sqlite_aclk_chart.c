@@ -936,7 +936,7 @@ void aclk_update_retention(struct aclk_database_worker_config *wc)
             }
             if (!wc->host || !first_entry_t) {
                 if (!first_entry_t) {
-                    delete_dimension_uuid((uuid_t *)sqlite3_column_blob(res, 0));
+                    queue_delete_dimension_uuid((uuid_t *)sqlite3_column_blob(res, 0));
                     total_deleted++;
                     dimension_update_count++;
                 }

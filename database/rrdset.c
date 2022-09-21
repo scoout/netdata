@@ -172,7 +172,6 @@ static void rrdset_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
     if (find_chart_uuid(host, string2str(st->parts.type), string2str(st->parts.id), string2str(st->parts.name), &st->chart_uuid))
         uuid_generate(st->chart_uuid);
-    update_chart_metadata(&st->chart_uuid, st, string2str(st->parts.id), string2str(st->parts.name));
 
     rrddim_index_init(st);
 
@@ -360,10 +359,8 @@ static void rrdset_react_callback(const DICTIONARY_ITEM *item __maybe_unused, vo
         rrdcalctemplate_link_matching_templates_to_rrdset(st);
     }
 
-    if(ctr->react_action & (RRDSET_REACT_CHART_ARCHIVED_TO_LIVE | RRDSET_REACT_PLUGIN_UPDATED | RRDSET_REACT_MODULE_UPDATED)) {
-        debug(D_METADATALOG, "CHART [%s] metadata updated", rrdset_id(st));
-        if(unlikely(update_chart_metadata(&st->chart_uuid, st, ctr->id, ctr->name)))
-            error_report("Failed to update chart metadata in the database");
+    if(ctr->react_action & (RRDSET_REACT_NEW | RRDSET_REACT_CHART_ARCHIVED_TO_LIVE | RRDSET_REACT_PLUGIN_UPDATED | RRDSET_REACT_MODULE_UPDATED)) {
+        queue_chart_update_metadata(st);
     }
 
     rrdcontext_updated_rrdset(st);

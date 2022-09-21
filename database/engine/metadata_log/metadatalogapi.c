@@ -33,7 +33,7 @@ void metalog_delete_dimension_by_uuid(struct rrdengine_instance *ctx, uuid_t *me
 {
     uuid_t  multihost_uuid;
 
-    delete_dimension_uuid(metric_uuid);
+    queue_delete_dimension_uuid(metric_uuid);
     rrdeng_convert_legacy_uuid_to_multihost(ctx->machine_guid, metric_uuid, &multihost_uuid);
-    delete_dimension_uuid(&multihost_uuid);
+    queue_delete_dimension_uuid(&multihost_uuid);
 }

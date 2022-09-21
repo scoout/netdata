@@ -60,6 +60,10 @@ enum metadata_database_opcode {
     METADATA_ADD_DIMENSION,
     METADATA_DEL_DIMENSION,
     METADATA_ADD_DIMENSION_OPTION,
+    METADATA_ADD_HOST_SYSTEM_INFO,
+    METADATA_ADD_HOST_INFO,
+    METADATA_STORE_CLAIM_ID,
+    METADATA_STORE_HOST_LABELS,
     // leave this last
     // we need it to check for worker utilization
     METADATA_MAX_ENUMERATIONS_DEFINED
@@ -69,7 +73,7 @@ enum metadata_database_opcode {
 
 struct metadata_database_cmd {
     enum metadata_database_opcode opcode;
-    void *param[MAX_PARAM_LIST];
+    const void *param[MAX_PARAM_LIST];
     struct metadata_completion *completion;
 };
 
@@ -96,7 +100,13 @@ struct metadata_database_worker_config {
 
 void metadata_sync_init(struct metadata_database_worker_config *metasync_worker);
 //int metadata_database_enq_cmd_noblock(struct metadata_database_worker_config *wc, struct metadata_database_cmd *cmd);
-void metadata_database_enq_cmd(struct metadata_database_worker_config *wc, struct metadata_database_cmd *cmd);
+//void metadata_database_enq_cmd(struct metadata_database_worker_config *wc, struct metadata_database_cmd *cmd);
 void queue_dimension_update_metadata(RRDDIM *rd);
 void queue_chart_update_metadata(RRDSET *st);
+void queue_dimension_update_flags(RRDDIM *rd);
+void queue_host_update_system_info(const char *machine_guid);
+void queue_host_update_info(const char *machine_guid);
+void queue_delete_dimension_uuid(uuid_t *uuid);
+void queue_store_claim_id(uuid_t *host_uuid, uuid_t *claim_uuid);
+void queue_store_host_labels(const char *machine_guid);
 #endif //NETDATA_SQLITE_METADATA_H

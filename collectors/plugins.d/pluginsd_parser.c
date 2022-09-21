@@ -150,14 +150,14 @@ PARSER_RC pluginsd_dimension_action(void *user, RRDSET *st, char *id, char *name
     if (likely(unhide_dimension)) {
         rrddim_option_clear(rd, RRDDIM_OPTION_HIDDEN);
         if (rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN)) {
-            (void)sql_set_dimension_option(&rd->metric_uuid, NULL);
             rrddim_flag_clear(rd, RRDDIM_FLAG_META_HIDDEN);
+            queue_dimension_update_flags(rd);
         }
     } else {
         rrddim_option_set(rd, RRDDIM_OPTION_HIDDEN);
         if (!rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN)) {
-           (void)sql_set_dimension_option(&rd->metric_uuid, "hidden");
             rrddim_flag_set(rd, RRDDIM_FLAG_META_HIDDEN);
+            queue_dimension_update_flags(rd);
         }
     }
     return PARSER_RC_OK;
@@ -205,7 +205,7 @@ PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, DICTIONARY *new_h
         host->rrdlabels = rrdlabels_create();
 
     rrdlabels_migrate_to_these(host->rrdlabels, new_host_labels);
-    sql_store_host_labels(host);
+    queue_store_host_labels(host->machine_guid);
 
     return PARSER_RC_OK;
 }

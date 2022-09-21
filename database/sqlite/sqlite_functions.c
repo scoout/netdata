@@ -540,9 +540,10 @@ int find_dimension_uuid(RRDSET *st, RRDDIM *rd, uuid_t *store_uuid)
     }
     else {
         uuid_generate(*store_uuid);
-        status = sql_store_dimension(store_uuid, &st->chart_uuid, rrddim_id(rd), rrddim_name(rd), rd->multiplier, rd->divisor, rd->algorithm);
-        if (unlikely(status))
-            error_report("Failed to store dimension metadata in the database");
+//        status = sql_store_dimension(store_uuid, &st->chart_uuid, rrddim_id(rd), rrddim_name(rd), rd->multiplier, rd->divisor, rd->algorithm);
+//        if (unlikely(status))
+//            error_report("Failed to store dimension metadata in the database");
+        //queue_dimension_update_metadata(rd);
     }
 
     rc = sqlite3_reset(res);
@@ -555,41 +556,6 @@ bind_fail:
     return 1;
 }
 
-#define DELETE_DIMENSION_UUID   "delete from dimension where dim_id = @uuid;"
-
-void delete_dimension_uuid(uuid_t *dimension_uuid)
-{
-    static __thread sqlite3_stmt *res = NULL;
-    int rc;
-
-#ifdef NETDATA_INTERNAL_CHECKS
-    char uuid_str[GUID_LEN + 1];
-    uuid_unparse_lower(*dimension_uuid, uuid_str);
-    debug(D_METADATALOG,"Deleting dimension uuid %s", uuid_str);
-#endif
-
-    if (unlikely(!res)) {
-        rc = prepare_statement(db_meta, DELETE_DIMENSION_UUID, &res);
-        if (rc != SQLITE_OK) {
-            error_report("Failed to prepare statement to delete a dimension uuid");
-            return;
-        }
-    }
-
-    rc = sqlite3_bind_blob(res, 1, dimension_uuid,  sizeof(*dimension_uuid), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_step_monitored(res);
-    if (unlikely(rc != SQLITE_DONE))
-        error_report("Failed to delete dimension uuid, rc = %d", rc);
-
-bind_fail:
-    rc = sqlite3_reset(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to reset statement when deleting dimension UUID, rc = %d", rc);
-    return;
-}
 
 /*
  * Do a database lookup to find the UUID of a chart
@@ -648,48 +614,7 @@ bind_fail:
     return 1;
 }
 
-int update_chart_metadata(uuid_t *chart_uuid, RRDSET *st, const char *id, const char *name)
-{
-    int rc;
-
-    if (unlikely(!db_meta) && default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
-        return 0;
-
-    rc = sql_store_chart(
-        chart_uuid, &st->rrdhost->host_uuid,
-        rrdset_parts_type(st), id, name,
-        rrdset_family(st), rrdset_context(st), rrdset_title(st), rrdset_units(st),
-        rrdset_plugin_name(st), rrdset_module_name(st),
-        st->priority, st->update_every, st->chart_type,
-        st->rrd_memory_mode, st->entries);
-
-    return rc;
-}
-
-
-//uuid_t *create_chart_uuid(RRDSET *st, const char *id, const char *name)
-//{
-//    uuid_t *uuid = NULL;
-//    int rc;
-//
-//    uuid = mallocz(sizeof(uuid_t));
-//    uuid_generate(*uuid);
-//
-//#ifdef NETDATA_INTERNAL_CHECKS
-//    char uuid_str[GUID_LEN + 1];
-//    uuid_unparse_lower(*uuid, uuid_str);
-//    debug(D_METADATALOG,"Generating uuid [%s] for chart %s under host %s", uuid_str, rrdset_id(st), rrdhost_hostname(st->rrdhost));
-//#endif
-//
-//    rc = update_chart_metadata(uuid, st, id, name);
-//
-//    if (unlikely(rc))
-//        error_report("Failed to store chart metadata in the database");
-//
-//    return uuid;
-//}
-
-static int exec_statement_with_uuid(const char *sql, uuid_t *uuid)
+int exec_statement_with_uuid(const char *sql, uuid_t *uuid)
 {
     int rc, result = 1;
     sqlite3_stmt *res = NULL;
@@ -803,157 +728,6 @@ bind_fail:
         error_report("Failed to reset statement to store host %s, rc = %d", hostname, rc);
     return 1;
 }
-
-//
-// Store host and host system info information in the database
-#define SQL_STORE_HOST_INFO "INSERT OR REPLACE INTO host " \
-        "(host_id, hostname, registry_hostname, update_every, os, timezone," \
-        "tags, hops, memory_mode, abbrev_timezone, utc_offset, program_name, program_version," \
-        "entries, health_enabled) " \
-        "values (@host_id, @hostname, @registry_hostname, @update_every, @os, @timezone, @tags, @hops, @memory_mode, " \
-        "@abbrev_timezone, @utc_offset, @program_name, @program_version, " \
-        "@entries, @health_enabled);"
-
-int sql_store_host_info(RRDHOST *host)
-{
-    static __thread sqlite3_stmt *res = NULL;
-    int rc;
-
-    if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
-            return 0;
-        error_report("Database has not been initialized");
-        return 1;
-    }
-
-    if (unlikely((!res))) {
-        rc = prepare_statement(db_meta, SQL_STORE_HOST_INFO, &res);
-        if (unlikely(rc != SQLITE_OK)) {
-            error_report("Failed to prepare statement to store host, rc = %d", rc);
-            return 1;
-        }
-    }
-
-    rc = sqlite3_bind_blob(res, 1, &host->host_uuid, sizeof(host->host_uuid), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 2, rrdhost_hostname(host), 0);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 3, rrdhost_registry_hostname(host), 1);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int(res, 4, host->rrd_update_every);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 5, rrdhost_os(host), 1);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 6, rrdhost_timezone(host), 1);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 7, rrdhost_tags(host), 1);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int(res, 8, host->system_info ? host->system_info->hops : 0);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int(res, 9, host->rrd_memory_mode);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 10, rrdhost_abbrev_timezone(host), 1);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int(res, 11, host->utc_offset);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 12, rrdhost_program_name(host), 1);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = bind_text_null(res, 13, rrdhost_program_version(host), 1);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int64(res, 14, host->rrd_history_entries);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_bind_int(res, 15, host->health_enabled);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    int store_rc = sqlite3_step_monitored(res);
-    if (unlikely(store_rc != SQLITE_DONE))
-        error_report("Failed to store host %s, rc = %d", rrdhost_hostname(host), rc);
-
-    rc = sqlite3_reset(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to reset statement to store host %s, rc = %d", rrdhost_hostname(host), rc);
-
-    return !(store_rc == SQLITE_DONE);
-bind_fail:
-    error_report("Failed to bind parameter to store host %s, rc = %d", rrdhost_hostname(host), rc);
-    rc = sqlite3_reset(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to reset statement to store host %s, rc = %d", rrdhost_hostname(host), rc);
-    return 1;
-}
-
-/*
- * Store set option for a dimension
- */
-int sql_set_dimension_option(uuid_t *dim_uuid, char *option)
-{
-    sqlite3_stmt *res = NULL;
-    int rc;
-
-    if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
-            return 0;
-        error_report("Database has not been initialized");
-        return 1;
-    }
-
-    rc = sqlite3_prepare_v2(db_meta, "UPDATE dimension SET options = @options WHERE dim_id = @dim_id", -1, &res, 0);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to prepare statement to update dimension options");
-        return 0;
-    };
-
-    rc = sqlite3_bind_blob(res, 2, dim_uuid, sizeof(*dim_uuid), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    if (!option || !strcmp(option,"unhide"))
-        rc = sqlite3_bind_null(res, 1);
-    else
-        rc = sqlite3_bind_text(res, 1, option, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = execute_insert(res);
-    if (unlikely(rc != SQLITE_DONE))
-        error_report("Failed to update dimension option, rc = %d", rc);
-
-bind_fail:
-    rc = sqlite3_finalize(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to finalize statement in update dimension options, rc = %d", rc);
-    return 0;
-}
-
 
 //
 // Support for archived charts
@@ -1349,70 +1123,7 @@ void add_migrated_file(char *path, uint64_t file_size)
     return;
 }
 
-static int sql_store_label(sqlite3_stmt *res, uuid_t *uuid, int source_type, const char *label, const char *value)
-{
-    int rc;
 
-    rc = sqlite3_bind_blob(res, 1, uuid, sizeof(*uuid), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind UUID parameter to store label information");
-        goto skip_store;
-    }
-
-    rc = sqlite3_bind_int(res, 2, source_type);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind type parameter to store label information");
-        goto skip_store;
-    }
-
-    rc = sqlite3_bind_text(res, 3, label, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind label parameter to store label information");
-        goto skip_store;
-    }
-
-    rc = sqlite3_bind_text(res, 4, value, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind value parameter to store label information");
-        goto skip_store;
-    }
-
-    rc = execute_insert(res);
-    if (unlikely(rc != SQLITE_DONE))
-        error_report("Failed to store label entry, rc = %d", rc);
-
-skip_store:
-    if (unlikely(sqlite3_reset(res) != SQLITE_OK))
-        error_report("Failed to reset the prepared statement when storing label information");
-
-    return rc != SQLITE_DONE;
-}
-
-#define SQL_INS_HOST_LABEL "INSERT OR REPLACE INTO host_label " \
-    "(host_id, source_type, label_key, label_value, date_created) " \
-    "values (@chart, @source, @label, @value, unixepoch());"
-
-static void sql_store_host_label(uuid_t *host_uuid, int source_type, const char *label, const char *value)
-{
-    static __thread sqlite3_stmt *res = NULL;
-    int rc;
-
-    if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
-            error_report("Database has not been initialized");
-        return;
-    }
-
-    if (unlikely(!res)) {
-        rc = prepare_statement(db_meta, SQL_INS_HOST_LABEL, &res);
-        if (unlikely(rc != SQLITE_OK)) {
-            error_report("Failed to prepare statement store chart labels");
-            return;
-        }
-    }
-
-    (void) sql_store_label(res, host_uuid, source_type, label, value);
-}
 
 int find_dimension_first_last_t(char *machine_guid, char *chart_id, char *dim_id,
                                 uuid_t *uuid, time_t *first_entry_t, time_t *last_entry_t, uuid_t *rrdeng_uuid, int tier)
@@ -1625,54 +1336,6 @@ failed:
     UNUSED(context);
     UNUSED(chart);
 #endif
-    return;
-}
-
-
-#define SQL_STORE_CLAIM_ID  "insert into node_instance " \
-    "(host_id, claim_id, date_created) values (@host_id, @claim_id, unixepoch()) " \
-    "on conflict(host_id) do update set claim_id = excluded.claim_id;"
-
-void store_claim_id(uuid_t *host_id, uuid_t *claim_id)
-{
-    sqlite3_stmt *res = NULL;
-    int rc;
-
-    if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
-            error_report("Database has not been initialized");
-        return;
-    }
-
-    rc = sqlite3_prepare_v2(db_meta, SQL_STORE_CLAIM_ID, -1, &res, 0);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to prepare statement store chart labels");
-        return;
-    }
-
-    rc = sqlite3_bind_blob(res, 1, host_id, sizeof(*host_id), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind host_id parameter to store node instance information");
-        goto failed;
-    }
-
-    if (claim_id)
-        rc = sqlite3_bind_blob(res, 2, claim_id, sizeof(*claim_id), SQLITE_STATIC);
-    else
-        rc = sqlite3_bind_null(res, 2);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind claim_id parameter to store node instance information");
-        goto failed;
-    }
-
-    rc = execute_insert(res);
-    if (unlikely(rc != SQLITE_DONE))
-        error_report("Failed to store node instance information, rc = %d", rc);
-
-failed:
-    if (unlikely(sqlite3_finalize(res) != SQLITE_OK))
-        error_report("Failed to finalize the prepared statement when storing node instance information");
-
     return;
 }
 
@@ -2050,153 +1713,7 @@ skip_loading:
 }
 
 
-#define SQL_INS_HOST_SYSTEM_INFO "INSERT OR REPLACE INTO host_info " \
-    "(host_id, system_key, system_value, date_created) " \
-    "VALUES (@host, @key, @value, unixepoch());"
 
-void sql_store_host_system_info_key_value(uuid_t *host_id, const char *name, const char *value)
-{
-    sqlite3_stmt *res = NULL;
-    int rc;
-
-    if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
-            error_report("Database has not been initialized");
-        return;
-    }
-
-    rc = sqlite3_prepare_v2(db_meta, SQL_INS_HOST_SYSTEM_INFO, -1, &res, 0);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to prepare statement to store system info");
-        return;
-    }
-
-    rc = sqlite3_bind_blob(res, 1, host_id, sizeof(*host_id), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind host parameter to store system information");
-        goto skip_store;
-    }
-
-    rc = sqlite3_bind_text(res, 2, name, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind label parameter to store name information");
-        goto skip_store;
-    }
-
-    rc = sqlite3_bind_text(res, 3, value, -1, SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind value parameter to store value information");
-        goto skip_store;
-    }
-
-    rc = execute_insert(res);
-    if (unlikely(rc != SQLITE_DONE))
-        error_report("Failed to store host system info, rc = %d", rc);
-
-skip_store:
-    if (unlikely(sqlite3_finalize(res) != SQLITE_OK))
-        error_report("Failed to finalize the prepared statement when storing  host system information");
-
-    return;
-}
-
-
-void sql_store_host_system_info(uuid_t *host_id, const struct rrdhost_system_info *system_info)
-{
-    if (unlikely(!system_info))
-        return;
-
-    if (system_info->container_os_name)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_CONTAINER_OS_NAME", system_info->container_os_name);
-
-    if (system_info->container_os_id)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_CONTAINER_OS_ID", system_info->container_os_id);
-
-    if (system_info->container_os_id_like)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_CONTAINER_OS_ID_LIKE", system_info->container_os_id_like);
-
-    if (system_info->container_os_version)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_CONTAINER_OS_VERSION", system_info->container_os_version);
-
-    if (system_info->container_os_version_id)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_CONTAINER_OS_VERSION_ID", system_info->container_os_version_id);
-
-    if (system_info->host_os_detection)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_CONTAINER_OS_DETECTION", system_info->host_os_detection);
-
-    if (system_info->host_os_name)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_HOST_OS_NAME", system_info->host_os_name);
-
-    if (system_info->host_os_id)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_HOST_OS_ID", system_info->host_os_id);
-
-    if (system_info->host_os_id_like)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_HOST_OS_ID_LIKE", system_info->host_os_id_like);
-
-    if (system_info->host_os_version)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_HOST_OS_VERSION", system_info->host_os_version);
-
-    if (system_info->host_os_version_id)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_HOST_OS_VERSION_ID", system_info->host_os_version_id);
-
-    if (system_info->host_os_detection)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_HOST_OS_DETECTION", system_info->host_os_detection);
-
-    if (system_info->kernel_name)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_KERNEL_NAME", system_info->kernel_name);
-
-    if (system_info->host_cores)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_CPU_LOGICAL_CPU_COUNT", system_info->host_cores);
-
-    if (system_info->host_cpu_freq)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_CPU_FREQ", system_info->host_cpu_freq);
-
-    if (system_info->host_ram_total)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_TOTAL_RAM", system_info->host_ram_total);
-
-    if (system_info->host_disk_space)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_TOTAL_DISK_SIZE", system_info->host_disk_space);
-
-    if (system_info->kernel_version)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_KERNEL_VERSION", system_info->kernel_version);
-
-    if (system_info->architecture)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_ARCHITECTURE", system_info->architecture);
-
-    if (system_info->virtualization)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_VIRTUALIZATION", system_info->virtualization);
-
-    if (system_info->virt_detection)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_VIRT_DETECTION", system_info->virt_detection);
-
-    if (system_info->container)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_CONTAINER", system_info->container);
-
-    if (system_info->container_detection)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_SYSTEM_CONTAINER_DETECTION", system_info->container_detection);
-
-    if (system_info->is_k8s_node)
-        sql_store_host_system_info_key_value(host_id, "NETDATA_HOST_IS_K8S_NODE", system_info->is_k8s_node);
-
-    return;
-}
-
-static int save_host_label_callback(const char *name, const char *value, RRDLABEL_SRC label_source, void *data)
-{
-    RRDHOST *host = (RRDHOST *)data;
-    sql_store_host_label(&host->host_uuid, (int)label_source & ~(RRDLABEL_FLAG_INTERNAL), name, value);
-    return 0;
-}
-
-#define SQL_DELETE_HOST_LABELS  "DELETE FROM host_label WHERE host_id = @uuid;"
-void sql_store_host_labels(RRDHOST *host)
-{
-    int rc = exec_statement_with_uuid(SQL_DELETE_HOST_LABELS, &host->host_uuid);
-    if (rc != SQLITE_OK)
-        error_report("Failed to remove old host labels for host %s", rrdhost_hostname(host));
-
-    rrdlabels_walkthrough_read(host->rrdlabels, save_host_label_callback, host);
-}
 
 #define SELECT_HOST_LABELS "SELECT label_key, label_value, source_type FROM host_label WHERE host_id = @host_id " \
     "AND label_key IS NOT NULL AND label_value IS NOT NULL;"
