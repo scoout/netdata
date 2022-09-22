@@ -54,6 +54,7 @@ const char *database_cleanup[] = {
     "DELETE FROM node_instance WHERE host_id NOT IN (SELECT host_id FROM host);",
     "DELETE FROM host_info WHERE host_id NOT IN (SELECT host_id FROM host);",
     "DELETE FROM host_label WHERE host_id NOT IN (SELECT host_id FROM host);",
+    "DROP TRIGGER IF EXISTS tr_dim_del;",
     NULL
 };
 
@@ -538,13 +539,13 @@ int find_dimension_uuid(RRDSET *st, RRDDIM *rd, uuid_t *store_uuid)
         uuid_copy(*store_uuid, *((uuid_t *)sqlite3_column_blob(res, 0)));
         status = 0;
     }
-    else {
-        uuid_generate(*store_uuid);
+    //else {
+    //    uuid_generate(*store_uuid);
 //        status = sql_store_dimension(store_uuid, &st->chart_uuid, rrddim_id(rd), rrddim_name(rd), rd->multiplier, rd->divisor, rd->algorithm);
 //        if (unlikely(status))
 //            error_report("Failed to store dimension metadata in the database");
         //queue_dimension_update_metadata(rd);
-    }
+//    }
 
     rc = sqlite3_reset(res);
     if (unlikely(rc != SQLITE_OK))
@@ -570,6 +571,9 @@ int find_chart_uuid(RRDHOST *host, const char *type, const char *id, const char 
     if (unlikely(!db_meta) && default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
         return 1;
 
+//    #define SQL_FIND_CHART_UUID
+//        "select chart_id from chart where host_id = @host and type=@type and id=@id and (name is null or name=@name) and chart_id is not null;"
+
     if (unlikely(!res)) {
         rc = prepare_statement(db_meta, SQL_FIND_CHART_UUID, &res);
         if (rc != SQLITE_OK) {
@@ -590,7 +594,7 @@ int find_chart_uuid(RRDHOST *host, const char *type, const char *id, const char 
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    rc = sqlite3_bind_text(res, 4, name ? name : id, -1, SQLITE_STATIC);
+    rc = sqlite3_bind_text(res, 4, name && *name ? name : id, -1, SQLITE_STATIC);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 

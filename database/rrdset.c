@@ -170,8 +170,13 @@ static void rrdset_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
         }
     }
 
-    if (find_chart_uuid(host, string2str(st->parts.type), string2str(st->parts.id), ctr->name, &st->chart_uuid))
+    if (find_chart_uuid(host, string2str(st->parts.type), string2str(st->parts.id), ctr->name, &st->chart_uuid)) {
         uuid_generate(st->chart_uuid);
+        char uuid_str[UUID_STR_LEN];
+        uuid_unparse_lower(st->chart_uuid, uuid_str);
+        info("DEBUG: Failed to find chart UUID : Host %s  type=%s, id=%s, name=%s (generated %s)",
+             string2str(host->hostname), string2str(st->parts.type), string2str(st->parts.id), string2str(st->parts.name), uuid_str);
+    }
 
     rrddim_index_init(st);
 

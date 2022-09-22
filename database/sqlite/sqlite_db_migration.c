@@ -74,6 +74,7 @@ const char *database_migrate_v4_v5[] = {
 };
 
 const char *database_migrate_v5_v6[] = {
+    "DROP TRIGGER IF EXISTS tr_dim_del;",
     "DROP TABLE IF EXISTS dimension_delete;",
     NULL
 };

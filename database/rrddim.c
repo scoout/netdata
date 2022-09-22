@@ -97,7 +97,11 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     rd->aclk_live_status = -1;
 #endif
 
-    (void) find_dimension_uuid(st, rd, &(rd->metric_uuid));
+    if (unlikely(find_dimension_uuid(st, rd, &(rd->metric_uuid)))) {
+        info("METADATA: NOT FOUND dimension UUID for %s (chart %s) (host %s)",
+             string2str(rd->id), string2str(rd->rrdset->id), string2str(rd->rrdset->rrdhost->hostname));
+        uuid_generate(rd->metric_uuid);
+    }
 
     // initialize the db tiers
     {

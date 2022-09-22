@@ -675,7 +675,7 @@ static int update_chart_metadata(uuid_t *chart_uuid, RRDSET *st, const char *id,
         return 0;
 
     rc = sql_store_chart(
-        chart_uuid, &st->rrdhost->host_uuid, rrdset_type_name(st->chart_type), id, name,
+        chart_uuid, &st->rrdhost->host_uuid, string2str(st->parts.type), id, name,
         rrdset_family(st), rrdset_context(st), rrdset_title(st), rrdset_units(st),
         rrdset_plugin_name(st), rrdset_module_name(st),
         st->priority, st->update_every, st->chart_type,
@@ -835,7 +835,8 @@ static void metadata_database_enq_cmd(struct metadata_database_worker_config *wc
     (void) uv_async_send(&wc->async);
 }
 
-static struct metadata_database_cmd metadata_database_deq_cmd(struct metadata_database_worker_config* wc)
+static struct metadata_database_cmd metadata_database_deq_cmd(struct metadata_database_worker_config* wc,
+                                                              enum metadata_database_opcode *next_opcode)
 {
     struct metadata_database_cmd ret;
     unsigned queue_size;
@@ -846,11 +847,13 @@ static struct metadata_database_cmd metadata_database_deq_cmd(struct metadata_da
         memset(&ret, 0, sizeof(ret));
         ret.opcode = METADATA_DATABASE_NOOP;
         ret.completion = NULL;
+        *next_opcode = METADATA_DATABASE_NOOP;
         if (wc->is_shutting_down)
             uv_cond_signal(&wc->cmd_cond);
     } else {
         /* dequeue command */
         ret = wc->cmd_queue.cmd_array[wc->cmd_queue.head];
+
         if (queue_size == 1) {
             wc->cmd_queue.head = wc->cmd_queue.tail = 0;
         } else {
@@ -858,6 +861,10 @@ static struct metadata_database_cmd metadata_database_deq_cmd(struct metadata_da
                                      wc->cmd_queue.head + 1 : 0;
         }
         wc->queue_size = queue_size - 1;
+        if (wc->queue_size > 0)
+            *next_opcode = wc->cmd_queue.cmd_array[wc->cmd_queue.head].opcode;
+        else
+            *next_opcode = METADATA_DATABASE_NOOP;
         /* wake up producers */
         uv_cond_signal(&wc->cmd_cond);
     }
@@ -946,7 +953,6 @@ static void timer_cb(uv_timer_t* handle)
 //    memset(&cmd, 0, sizeof(cmd));
 //    cmd.opcode = METADATA_DATABASE_TIMER;
 //    metadata_database_enq_cmd_noblock(wc, &cmd);
-    wc->wakeup_now = 1;
 }
 
 #define MAX_CMD_BATCH_SIZE (32)
@@ -974,7 +980,7 @@ static void metadata_database_worker(void *arg)
     struct metadata_database_worker_config *wc = arg;
     uv_loop_t *loop;
     int ret;
-    enum metadata_database_opcode opcode;
+    enum metadata_database_opcode opcode, next_opcode;
     uv_timer_t timer_req;
 //    uv_timer_t timer_req1;
     struct metadata_database_cmd cmd;
@@ -1009,12 +1015,15 @@ static void metadata_database_worker(void *arg)
 
     memset(&cmd, 0, sizeof(cmd));
     wc->startup_time = now_realtime_sec();
-    wc->max_batch = 128;
+    wc->max_batch = 1024;
     wc->metadata_cleanup_running = 0;
     wc->check_metadata_after = wc->startup_time + METADATA_MAINTENANCE_FIRST_CHECK;
 
     unsigned int max_commands_in_queue = 0;
     int shutdown = 0;
+    int in_transaction = 0;
+    struct metadata_completion *shutdown_completion = NULL;
+    int commands_in_transaction = 0;
     while (shutdown == 0 || wc->metadata_cleanup_running) {
         RRDDIM *rd;
         RRDSET *st;
@@ -1029,9 +1038,9 @@ static void metadata_database_worker(void *arg)
         /* wait for commands */
         cmd_batch_size = 0;
         do {
-            if (unlikely(cmd_batch_size >= wc->max_batch))
+            if (unlikely(cmd_batch_size >= METADATA_MAX_BATCH_SIZE))
                 break;
-            cmd = metadata_database_deq_cmd(wc);
+            cmd = metadata_database_deq_cmd(wc, &next_opcode);
 
             if (opcode == METADATA_DATABASE_NOOP && wc->is_shutting_down) {
                 shutdown = 1;
@@ -1041,14 +1050,22 @@ static void metadata_database_worker(void *arg)
             opcode = cmd.opcode;
             ++cmd_batch_size;
 
+            // If we are not in transaction and this command is the same with the next ; start a transaction
+            if (!in_transaction && opcode < METADATA_SKIP_TRANSACTION && opcode == next_opcode) {
+                if (opcode != METADATA_DATABASE_NOOP) {
+                    in_transaction = 1;
+                    db_execute("BEGIN TRANSACTION;");
+                    info("METADATA: Starting transaction");
+                }
+            }
+
+            if (likely(in_transaction)) {
+                commands_in_transaction++;
+            }
+
             if (wc->max_commands_in_queue > max_commands_in_queue) {
                 max_commands_in_queue = wc->max_commands_in_queue;
                 info("Maximum commands in metadata queue = %u", max_commands_in_queue);
-            }
-
-            if (!wc->wakeup_now) {
-                worker_is_idle();
-                usleep(50 * USEC_PER_MS);
             }
 
             if (likely(opcode != METADATA_DATABASE_NOOP)) {
@@ -1067,7 +1084,7 @@ static void metadata_database_worker(void *arg)
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     st = (RRDSET *) dictionary_acquired_item_value(dict_item);
                     info("METADATA: Storing CHART %s", string2str(st->id));
-                    update_chart_metadata(&st->chart_uuid, st, string2str(st->id), string2str(st->name));
+                    update_chart_metadata(&st->chart_uuid, st, string2str(st->parts.id), string2str(st->parts.name));
                     dictionary_acquired_item_release(st->rrdhost->rrdset_root_index, dict_item);
                     break;
                 case METADATA_ADD_CHART_LABEL:
@@ -1076,7 +1093,8 @@ static void metadata_database_worker(void *arg)
                 case METADATA_ADD_DIMENSION:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     rd = (RRDDIM *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing DIM %s", string2str(rd->id));
+                    info("METADATA: Storing DIM %s (chart %s) (host %s)",
+                         string2str(rd->id), string2str(rd->rrdset->id), string2str(rd->rrdset->rrdhost->hostname));
                     rc = sql_store_dimension(&rd->metric_uuid, &rd->rrdset->chart_uuid, string2str(rd->id),
                                              string2str(rd->name), rd->multiplier, rd->divisor, rd->algorithm);
                     if (unlikely(rc))
@@ -1092,7 +1110,7 @@ static void metadata_database_worker(void *arg)
                 case METADATA_ADD_DIMENSION_OPTION:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     rd = (RRDDIM *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing DIM %s", string2str(rd->id));
+                    info("METADATA: Storing DIM OPTION %s", string2str(rd->id));
 
                     rc = sql_set_dimension_option(&rd->metric_uuid, rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN) ? "hidden" : NULL);
                     if (unlikely(rc))
@@ -1127,8 +1145,8 @@ static void metadata_database_worker(void *arg)
                     host = (RRDHOST *) dictionary_acquired_item_value(dict_item);
                     info("METADATA: Storing HOST LABELS %s", string2str(host->hostname));
                     sql_store_host_labels(host);
-                    if (unlikely(rc))
-                        error_report("Failed to store host labels in the database for %s", string2str(host->hostname));
+//                    if (unlikely(rc))
+//                        error_report("Failed to store host labels in the database for %s", string2str(host->hostname));
                     dictionary_acquired_item_release(rrdhost_root_index, dict_item);
                     break;
                 case METADATA_MAINTENANCE:
@@ -1149,16 +1167,21 @@ static void metadata_database_worker(void *arg)
                     }
                     break;
                 case METADATA_SYNC_SHUTDOWN:
-                    info("METADATA is shutting down");
-                    shutdown = 1;
+                    info("METADATA: Shutdown command received; draining queue and shutting down");
                     wc->is_shutting_down = 1;
-//                    if (!uv_timer_stop(&timer_req))
-//                        uv_close((uv_handle_t *)&timer_req, NULL);
-                    metadata_complete(cmd.completion);
+                    shutdown_completion = cmd.completion;
+                    cmd.completion = NULL;
                     break;
                 default:
                     break;
             }
+            if (in_transaction && opcode != next_opcode) {
+                in_transaction = 0;
+                db_execute("COMMIT TRANSACTION;");
+                info("METADATA: Ending transaction (current OP = %d and next operation is %d) commands %d", opcode, next_opcode, commands_in_transaction);
+                commands_in_transaction = 0;
+            }
+
             if (cmd.completion)
                 metadata_complete(cmd.completion);
         } while (opcode != METADATA_DATABASE_NOOP);
@@ -1191,6 +1214,7 @@ static void metadata_database_worker(void *arg)
 
     freez(loop);
     worker_unregister();
+    metadata_complete(shutdown_completion);
     return;
 
 error_after_timer_init:
@@ -1207,13 +1231,14 @@ void metadata_sync_exit(void)
     struct metadata_completion compl;
     init_metadata_completion(&compl);
 
+    info("METADATA: Shutting down metadata sync thread");
     struct metadata_database_cmd cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.opcode = METADATA_SYNC_SHUTDOWN;
     cmd.completion = &compl;
     metadata_database_enq_cmd(&metasync_worker, &cmd);
 
-    /* wait for metadata thread to shutdown */
+    /* wait for metadata thread to shut down */
     wait_for_metadata_completion(&compl);
     destroy_metadata_completion(&compl);
 }

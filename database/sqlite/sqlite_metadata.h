@@ -16,6 +16,7 @@ extern sqlite3 *db_meta;
 #define METADATA_MAINTENANCE_RETRY (60)
 #define METADATA_MAINTENANCE_INTERVAL (3600)
 #define MAX_METADATA_CLEANUP (500)
+#define METADATA_MAX_BATCH_SIZE (1024)
 
 struct metadata_completion {
     uv_mutex_t mutex;
@@ -68,6 +69,7 @@ enum metadata_database_opcode {
     METADATA_ADD_HOST_INFO,
     METADATA_STORE_CLAIM_ID,
     METADATA_STORE_HOST_LABELS,
+    METADATA_SKIP_TRANSACTION,
     METADATA_MAINTENANCE,
     METADATA_SYNC_SHUTDOWN,
     // leave this last
@@ -77,6 +79,7 @@ enum metadata_database_opcode {
 
 #define MAX_PARAM_LIST  (4)
 
+#define DEF METADATA_MAX_BATCH_SIZE
 struct metadata_database_cmd {
     enum metadata_database_opcode opcode;
     const void *param[MAX_PARAM_LIST];
@@ -91,7 +94,6 @@ struct metadata_database_cmdqueue {
 struct metadata_database_worker_config {
     uv_thread_t thread;
     time_t startup_time;           // When the sync thread started
-    int wakeup_now;
     unsigned max_batch;
     unsigned max_commands_in_queue;
     volatile unsigned queue_size;
