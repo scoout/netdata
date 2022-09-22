@@ -1009,7 +1009,7 @@ static void metadata_event_loop(void *arg)
                 if (opcode != METADATA_DATABASE_NOOP) {
                     in_transaction = 1;
                     db_execute("BEGIN TRANSACTION;");
-                    info("METADATA: Starting transaction");
+//                    info("METADATA: Starting transaction");
                 }
             }
 
@@ -1037,7 +1037,7 @@ static void metadata_event_loop(void *arg)
                 case METADATA_ADD_CHART:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     st = (RRDSET *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing CHART %s", string2str(st->id));
+//                    info("METADATA: Storing CHART %s", string2str(st->id));
                     update_chart_metadata(&st->chart_uuid, st, string2str(st->parts.id), string2str(st->parts.name));
                     dictionary_acquired_item_release(st->rrdhost->rrdset_root_index, dict_item);
                     break;
@@ -1047,8 +1047,8 @@ static void metadata_event_loop(void *arg)
                 case METADATA_ADD_DIMENSION:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     rd = (RRDDIM *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing DIM %s (chart %s) (host %s)",
-                         string2str(rd->id), string2str(rd->rrdset->id), string2str(rd->rrdset->rrdhost->hostname));
+//                    info("METADATA: Storing DIM %s (chart %s) (host %s)",
+//                         string2str(rd->id), string2str(rd->rrdset->id), string2str(rd->rrdset->rrdhost->hostname));
                     rc = sql_store_dimension(&rd->metric_uuid, &rd->rrdset->chart_uuid, string2str(rd->id),
                                              string2str(rd->name), rd->multiplier, rd->divisor, rd->algorithm);
                     if (unlikely(rc))
@@ -1064,32 +1064,30 @@ static void metadata_event_loop(void *arg)
                 case METADATA_ADD_DIMENSION_OPTION:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     rd = (RRDDIM *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing DIM OPTION %s", string2str(rd->id));
-
+//                    info("METADATA: Storing DIM OPTION %s", string2str(rd->id));
                     rc = sql_set_dimension_option(&rd->metric_uuid, rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN) ? "hidden" : NULL);
                     if (unlikely(rc))
                         error_report("Failed to store dimension option for %s", string2str(rd->id));
-
                     dictionary_acquired_item_release(rd->rrdset->rrddim_root_index, dict_item);
                     break;
                 case METADATA_ADD_HOST_SYSTEM_INFO:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     host = (RRDHOST *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing HOST SYSTEM INFO %s", string2str(host->hostname));
+//                    info("METADATA: Storing HOST SYSTEM INFO %s", string2str(host->hostname));
                     sql_store_host_system_info(&host->host_uuid, host->system_info);
                     dictionary_acquired_item_release(rrdhost_root_index, dict_item);
                     break;
                 case METADATA_ADD_HOST_INFO:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     host = (RRDHOST *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing HOST SYSTEM INFO %s", string2str(host->hostname));
+//                    info("METADATA: Storing HOST SYSTEM INFO %s", string2str(host->hostname));
                     rc = sql_store_host_info(host);
                     if (unlikely(rc))
                         error_report("Failed to store host info in the database for %s", string2str(host->hostname));
                     dictionary_acquired_item_release(rrdhost_root_index, dict_item);
                     break;
                 case METADATA_STORE_CLAIM_ID:
-                    info("METADATA: Storing CLAIM ID FOR HOST");
+//                    info("METADATA: Storing CLAIM ID FOR HOST");
                     store_claim_id((uuid_t *) cmd.param[0], (uuid_t *) cmd.param[1]);
                     freez((void *) cmd.param[0]);
                     freez((void *) cmd.param[1]);
@@ -1097,7 +1095,7 @@ static void metadata_event_loop(void *arg)
                 case METADATA_STORE_HOST_LABELS:
                     dict_item = (DICTIONARY_ITEM * ) cmd.param[0];
                     host = (RRDHOST *) dictionary_acquired_item_value(dict_item);
-                    info("METADATA: Storing HOST LABELS %s", string2str(host->hostname));
+//                    info("METADATA: Storing HOST LABELS %s", string2str(host->hostname));
                     sql_store_host_labels(host);
                     dictionary_acquired_item_release(rrdhost_root_index, dict_item);
                     break;
@@ -1121,10 +1119,10 @@ static void metadata_event_loop(void *arg)
                 default:
                     break;
             }
-            if (in_transaction && opcode != next_opcode) {
+            if (in_transaction && (commands_in_transaction > 128 || opcode != next_opcode)) {
                 in_transaction = 0;
                 db_execute("COMMIT TRANSACTION;");
-                info("METADATA: Ending transaction (current OP = %u and next operation is %u) commands %d", opcode, next_opcode, commands_in_transaction);
+                //info("METADATA: Ending transaction commands %d", commands_in_transaction);
                 commands_in_transaction = 0;
             }
 
