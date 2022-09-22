@@ -51,7 +51,6 @@ struct pg_cache_page_index;
 #include "aclk/aclk_rrdhost_state.h"
 #include "sqlite/sqlite_health.h"
 #include "rrdcontext.h"
-extern struct metadata_database_worker_config metasync_worker;
 extern int storage_tiers;
 extern int storage_tiers_grouping_iterations[RRD_STORAGE_TIERS];
 

@@ -700,12 +700,11 @@ static bool dimension_can_be_deleted(uuid_t *dim_uuid)
 #endif
 }
 
-#define SELECT_DIMENSION_LIST "SELECT dim_id, rowid FROM dimension WHERE rowid > @row_id;"
+#define SELECT_DIMENSION_LIST "SELECT dim_id, rowid FROM dimension WHERE rowid > @row_id"
 
 static void check_dimension_metadata(struct metadata_database_worker_config *wc)
 {
     int rc;
-
     sqlite3_stmt *res = NULL;
 
     rc = sqlite3_prepare_v2(db_meta, SELECT_DIMENSION_LIST, -1, &res, 0);
@@ -716,7 +715,7 @@ static void check_dimension_metadata(struct metadata_database_worker_config *wc)
 
     rc = sqlite3_bind_int64(res, 1, wc->row_id);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind host parameter to fetch host dimensions");
+        error_report("Failed to row parameter");
         goto skip_run;
     }
 
@@ -727,9 +726,8 @@ static void check_dimension_metadata(struct metadata_database_worker_config *wc)
     info("METADATA: Checking dimensions starting after row %lu", wc->row_id);
 
     while (sqlite3_step_monitored(res) == SQLITE_ROW && total_deleted < MAX_METADATA_CLEANUP) {
-        if (unlikely(netdata_exit))
+        if (unlikely(metadata_flag_check(wc, METADATA_FLAG_SHUTDOWN)))
             break;
-        total_checked++;
 
         last_row_id = sqlite3_column_int64(res, 1);
         rc = dimension_can_be_deleted((uuid_t *)sqlite3_column_blob(res, 0));
@@ -737,21 +735,21 @@ static void check_dimension_metadata(struct metadata_database_worker_config *wc)
             //delete_dimension_uuid((uuid_t *)sqlite3_column_blob(res, 0));
             total_deleted++;
         }
+        total_checked++;
     }
     wc->row_id = last_row_id;
-    total_checked++;
     int64_t now = now_realtime_sec();
     if (total_deleted > 0) {
         wc->check_metadata_after = now + METADATA_MAINTENANCE_RETRY;
     } else
         wc->row_id = 0;
-    info("METADATA: Checked %u, deleted %u -- will resume after row %lu in %lu seconds", total_checked, total_deleted, wc->row_id,
+    info("METADATA: Checked %u, deleted %u -- will resume after row %lu in %ld seconds", total_checked, total_deleted, wc->row_id,
          wc->check_metadata_after - now);
 
 skip_run:
     rc = sqlite3_finalize(res);
     if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to finalize the prepared statement when reading host dimensions");
+        error_report("Failed to finalize the prepared statement when reading dimensions");
     return;
 }
 
@@ -775,7 +773,8 @@ int metadata_database_enq_cmd_noblock(struct metadata_database_worker_config *wc
 
     /* wait for free space in queue */
     uv_mutex_lock(&wc->cmd_mutex);
-    if ((queue_size = wc->queue_size) == METADATA_DATABASE_CMD_Q_MAX_SIZE || wc->is_shutting_down) {
+    if ((queue_size = wc->queue_size) == METADATA_DATABASE_CMD_Q_MAX_SIZE ||
+        metadata_flag_check(wc, METADATA_FLAG_SHUTDOWN)) {
         uv_mutex_unlock(&wc->cmd_mutex);
         return 1;
     }
@@ -796,7 +795,7 @@ static void metadata_database_enq_cmd(struct metadata_database_worker_config *wc
 
     /* wait for free space in queue */
     uv_mutex_lock(&wc->cmd_mutex);
-    if (wc->is_shutting_down) {
+    if (metadata_flag_check(wc, METADATA_FLAG_SHUTDOWN)) {
         uv_mutex_unlock(&wc->cmd_mutex);
         return;
     }
@@ -831,7 +830,7 @@ static struct metadata_database_cmd metadata_database_deq_cmd(struct metadata_da
         ret.opcode = METADATA_DATABASE_NOOP;
         ret.completion = NULL;
         *next_opcode = METADATA_DATABASE_NOOP;
-        if (wc->is_shutting_down)
+        if (metadata_flag_check(wc, METADATA_FLAG_SHUTDOWN))
             uv_cond_signal(&wc->cmd_cond);
     } else {
         /* dequeue command */
@@ -857,51 +856,38 @@ static struct metadata_database_cmd metadata_database_deq_cmd(struct metadata_da
 }
 
 
-static int metadata_cleanup_running = 0;
+//static int metadata_cleanup_running = 0;
 
-static void stop_metadata_maintenance_run()
-{
-    uv_mutex_lock(&metadata_async_lock);
-    metadata_cleanup_running = 0;
-    uv_mutex_unlock(&metadata_async_lock);
-}
+//static void stop_metadata_maintenance_run()
+//{
+//    uv_mutex_lock(&metadata_async_lock);
+//    metadata_cleanup_running = 0;
+//    uv_mutex_unlock(&metadata_async_lock);
+//}
 
-static int metadata_maintenance_run()
-{
-    int rc = 0;
-    uv_mutex_lock(&metadata_async_lock);
-    if (unlikely(metadata_cleanup_running))
-        rc = 1;
-    else
-        metadata_cleanup_running = 1;
-    uv_mutex_unlock(&metadata_async_lock);
-    return rc;
-}
+//static int metadata_maintenance_run()
+//{
+//    int rc = 0;
+//
+//    uv_mutex_lock(&metadata_async_lock);
+//    if (unlikely(metadata_cleanup_running))
+//        rc = 1;
+//    else
+//        metadata_cleanup_running = 1;
+//    uv_mutex_unlock(&metadata_async_lock);
+//    return rc;
+//}
 
 static void after_metadata_cleanup(uv_work_t *req, int status)
 {
-    struct metadata_database_worker_config *wc = req->data;
-    (void)status;
-    stop_metadata_maintenance_run();
-    wc->metadata_cleanup_running = 0;
-    //    struct aclk_database_cmd cmd;
-    //    memset(&cmd, 0, sizeof(cmd));
-    //    cmd.opcode = ACLK_DATABASE_DIM_DELETION;
-    //    if (aclk_database_enq_cmd_noblock(wc, &cmd))
-    //        info("Failed to queue a dimension deletion message");
-    //
-    //    cmd.opcode = ACLK_DATABASE_NODE_INFO;
-    //    if (aclk_database_enq_cmd_noblock(wc, &cmd))
-    //        info("Failed to queue a node update info message");
-}
+    UNUSED(status);
 
+    struct metadata_database_worker_config *wc = req->data;
+    metadata_flag_clear(wc, METADATA_FLAG_CLEANUP);
+}
 static void start_metadata_cleanup(uv_work_t *req)
 {
     struct metadata_database_worker_config *wc = req->data;
-
-    if (unlikely(wc->is_shutting_down))
-        return;
-
     check_dimension_metadata(wc);
 }
 
@@ -930,22 +916,9 @@ static void timer_cb(uv_timer_t* handle)
        if (!metadata_database_enq_cmd_noblock(wc, &cmd))
            wc->check_metadata_after = now + METADATA_MAINTENANCE_INTERVAL;
    }
-
-//    wc->max_batch += 32;
-//    struct metadata_database_cmd cmd;
-//    memset(&cmd, 0, sizeof(cmd));
-//    cmd.opcode = METADATA_DATABASE_TIMER;
-//    metadata_database_enq_cmd_noblock(wc, &cmd);
 }
 
-#define MAX_CMD_BATCH_SIZE (32)
-
-//static int store_labels_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
-//    sql_store_chart_label((uuid_t *)data, (int)ls, (char *) name, (char *) value);
-//    return 1;
-//}
-
-static void metadata_database_worker(void *arg)
+static void metadata_event_loop(void *arg)
 {
     worker_register("METASYNC");
     worker_register_job_name(METADATA_DATABASE_NOOP,        "noop");
@@ -957,18 +930,16 @@ static void metadata_database_worker(void *arg)
     worker_register_job_name(METADATA_ADD_DIMENSION_OPTION, "dimension option");
     worker_register_job_name(METADATA_ADD_HOST_SYSTEM_INFO, "host system info");
     worker_register_job_name(METADATA_ADD_HOST_INFO,        "host info");
-    worker_register_job_name(METADATA_STORE_CLAIM_ID,        "add claim id");
+    worker_register_job_name(METADATA_STORE_CLAIM_ID,       "add claim id");
+    worker_register_job_name(METADATA_MAINTENANCE,          "maintenance");
 
-
-    struct metadata_database_worker_config *wc = arg;
-    uv_loop_t *loop;
     int ret;
-    enum metadata_database_opcode opcode, next_opcode;
+    uv_loop_t *loop;
     uv_timer_t timer_req;
-//    uv_timer_t timer_req1;
-    struct metadata_database_cmd cmd;
     unsigned cmd_batch_size;
-    uv_work_t metadata_work;
+    struct metadata_database_worker_config *wc = arg;
+    enum metadata_database_opcode opcode, next_opcode;
+    uv_work_t metadata_cleanup_worker;
 
     uv_thread_set_name_np(wc->thread, "METASYNC");
     loop = wc->loop = mallocz(sizeof(uv_loop_t));
@@ -996,18 +967,18 @@ static void metadata_database_worker(void *arg)
 
     info("Starting metadata sync thread -- scratch area %d entries, %lu bytes", METADATA_DATABASE_CMD_Q_MAX_SIZE, sizeof(*wc));
 
+    struct metadata_database_cmd cmd;
     memset(&cmd, 0, sizeof(cmd));
-    wc->startup_time = now_realtime_sec();
-    wc->max_batch = 1024;
-    wc->metadata_cleanup_running = 0;
-    wc->check_metadata_after = wc->startup_time + METADATA_MAINTENANCE_FIRST_CHECK;
+    metadata_flag_clear(wc, METADATA_FLAG_CLEANUP);
+    wc->check_metadata_after = now_realtime_sec() + METADATA_MAINTENANCE_FIRST_CHECK;
 
     unsigned int max_commands_in_queue = 0;
     int shutdown = 0;
     int in_transaction = 0;
-    struct metadata_completion *shutdown_completion = NULL;
+    struct completion *shutdown_completion = NULL;
     int commands_in_transaction = 0;
-    while (shutdown == 0 || wc->metadata_cleanup_running) {
+    completion_mark_complete(&wc->init_complete);
+    while (shutdown == 0 || metadata_flag_check(wc, METADATA_FLAG_CLEANUP)) {
         RRDDIM *rd;
         RRDSET *st;
         RRDHOST *host;
@@ -1025,7 +996,7 @@ static void metadata_database_worker(void *arg)
                 break;
             cmd = metadata_database_deq_cmd(wc, &next_opcode);
 
-            if (opcode == METADATA_DATABASE_NOOP && wc->is_shutting_down) {
+            if (opcode == METADATA_DATABASE_NOOP && metadata_flag_check(wc, METADATA_FLAG_SHUTDOWN)) {
                 shutdown = 1;
                 continue;
             }
@@ -1128,30 +1099,22 @@ static void metadata_database_worker(void *arg)
                     host = (RRDHOST *) dictionary_acquired_item_value(dict_item);
                     info("METADATA: Storing HOST LABELS %s", string2str(host->hostname));
                     sql_store_host_labels(host);
-//                    if (unlikely(rc))
-//                        error_report("Failed to store host labels in the database for %s", string2str(host->hostname));
                     dictionary_acquired_item_release(rrdhost_root_index, dict_item);
                     break;
                 case METADATA_MAINTENANCE:
-                    if (unlikely(wc->metadata_cleanup_running))
+                    if (unlikely(metadata_flag_check(wc, METADATA_FLAG_CLEANUP)))
                         break;
 
-                    if (unlikely(metadata_maintenance_run())) {
-                        wc->check_metadata_after = now_realtime_sec() + METADATA_MAINTENANCE_RETRY;
-                        break;
-                    }
-
-                    metadata_work.data = wc;
-                    wc->metadata_cleanup_running = 1;
+                    metadata_cleanup_worker.data = wc;
+                    metadata_flag_set(wc, METADATA_FLAG_CLEANUP);
                     if (unlikely(
-                            uv_queue_work(loop, &metadata_work, start_metadata_cleanup, after_metadata_cleanup))) {
-                        wc->metadata_cleanup_running = 0;
-                        stop_metadata_maintenance_run();
+                            uv_queue_work(loop, &metadata_cleanup_worker, start_metadata_cleanup, after_metadata_cleanup))) {
+                        metadata_flag_clear(wc, METADATA_FLAG_CLEANUP);
                     }
                     break;
                 case METADATA_SYNC_SHUTDOWN:
                     info("METADATA: Shutdown command received; draining queue and shutting down");
-                    wc->is_shutting_down = 1;
+                    metadata_flag_set(wc, METADATA_FLAG_SHUTDOWN);
                     shutdown_completion = cmd.completion;
                     cmd.completion = NULL;
                     break;
@@ -1161,12 +1124,12 @@ static void metadata_database_worker(void *arg)
             if (in_transaction && opcode != next_opcode) {
                 in_transaction = 0;
                 db_execute("COMMIT TRANSACTION;");
-                info("METADATA: Ending transaction (current OP = %d and next operation is %d) commands %d", opcode, next_opcode, commands_in_transaction);
+                info("METADATA: Ending transaction (current OP = %u and next operation is %u) commands %d", opcode, next_opcode, commands_in_transaction);
                 commands_in_transaction = 0;
             }
 
             if (cmd.completion)
-                metadata_complete(cmd.completion);
+                completion_mark_complete(cmd.completion);
         } while (opcode != METADATA_DATABASE_NOOP);
     }
 
@@ -1197,7 +1160,7 @@ static void metadata_database_worker(void *arg)
 
     freez(loop);
     worker_unregister();
-    metadata_complete(shutdown_completion);
+    completion_mark_complete(shutdown_completion);
     return;
 
 error_after_timer_init:
@@ -1209,10 +1172,12 @@ error_after_loop_init:
     worker_unregister();
 }
 
-void metadata_sync_exit(void)
+struct metadata_database_worker_config metasync_worker;
+
+void metadata_sync_shutdown(void)
 {
-    struct metadata_completion compl;
-    init_metadata_completion(&compl);
+    struct completion compl;
+    completion_init(&compl);
 
     info("METADATA: Shutting down metadata sync thread");
     struct metadata_database_cmd cmd;
@@ -1222,29 +1187,29 @@ void metadata_sync_exit(void)
     metadata_database_enq_cmd(&metasync_worker, &cmd);
 
     /* wait for metadata thread to shut down */
-    wait_for_metadata_completion(&compl);
-    destroy_metadata_completion(&compl);
+    completion_wait_for(&compl);
+    completion_destroy(&compl);
 }
 
 // -------------------------------------------------------------
 // Init function called on agent startup
-void metadata_sync_init(struct metadata_database_worker_config *wc)
-{
 
-    if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE) {
-            return;
-        }
-        error_report("Database has not been initialized");
-        return;
-    }
+void metadata_sync_init(void)
+{
+    struct metadata_database_worker_config *wc = &metasync_worker;
 
     fatal_assert(0 == uv_mutex_init(&metadata_async_lock));
 
     memset(wc, 0, sizeof(*wc));
     metadata_database_init_cmd_queue(wc);
-    fatal_assert(0 == uv_thread_create(&(wc->thread), metadata_database_worker, wc));
-    info("SQLite metadata sync initialization completed");
+    completion_init(&wc->init_complete);
+
+    fatal_assert(0 == uv_thread_create(&(wc->thread), metadata_event_loop, wc));
+
+    completion_wait_for(&wc->init_complete);
+    completion_destroy(&wc->init_complete);
+
+    info("SQLite metadata sync initialization complete");
     return;
 }
 

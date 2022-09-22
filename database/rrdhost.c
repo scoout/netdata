@@ -3,8 +3,6 @@
 #define NETDATA_RRD_INTERNALS
 #include "rrd.h"
 
-struct metadata_database_worker_config metasync_worker;
-
 int storage_tiers = 1;
 int storage_tiers_grouping_iterations[RRD_STORAGE_TIERS] = { 1, 60, 60, 60, 60 };
 RRD_BACKFILL storage_tiers_backfill[RRD_STORAGE_TIERS] = { RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW };
@@ -886,7 +884,7 @@ int rrd_init(char *hostname, struct rrdhost_system_info *system_info) {
         config_set_number(CONFIG_SECTION_DB, "storage tiers", storage_tiers);
     }
 #endif
-    metadata_sync_init(&metasync_worker);
+    metadata_sync_init();
 
     health_init();
     rrdpush_init();

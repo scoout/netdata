@@ -633,7 +633,7 @@ void migrate_localhost(uuid_t *host_uuid)
 //
 #define SELECT_DIMENSION "select d.id, d.name from dimension d where d.chart_id = @chart_uuid;"
 
-void sql_rrdim2json(sqlite3_stmt *res_dim, uuid_t *chart_uuid, BUFFER *wb, size_t *dimensions_count)
+static void sql_rrdim2json(sqlite3_stmt *res_dim, uuid_t *chart_uuid, BUFFER *wb, size_t *dimensions_count)
 {
     int rc;
 
@@ -1611,9 +1611,6 @@ skip_loading:
         error_report("Failed to finalize the prepared statement when reading host information");
     return;
 }
-
-
-
 
 #define SELECT_HOST_LABELS "SELECT label_key, label_value, source_type FROM host_label WHERE host_id = @host_id " \
     "AND label_key IS NOT NULL AND label_value IS NOT NULL;"

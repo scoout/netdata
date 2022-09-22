@@ -6,56 +6,14 @@
 #include "sqlite3.h"
 #include "sqlite_functions.h"
 
-#define INC(x)   __atomic_fetch_add(&x, 1, __ATOMIC_SEQ_CST)
-#define DEC(x)   __atomic_fetch_add(&x, -1, __ATOMIC_SEQ_CST)
-
 extern sqlite3 *db_meta;
 
-#define METADATA_DATABASE_CMD_Q_MAX_SIZE (100000)
-#define METADATA_MAINTENANCE_FIRST_CHECK (60)
-#define METADATA_MAINTENANCE_RETRY (60)
-#define METADATA_MAINTENANCE_INTERVAL (3600)
-#define MAX_METADATA_CLEANUP (500)
-#define METADATA_MAX_BATCH_SIZE (1024)
-
-struct metadata_completion {
-    uv_mutex_t mutex;
-    uv_cond_t cond;
-    volatile unsigned completed;
-};
-
-static inline void init_metadata_completion(struct metadata_completion *p)
-{
-    p->completed = 0;
-    fatal_assert(0 == uv_cond_init(&p->cond));
-    fatal_assert(0 == uv_mutex_init(&p->mutex));
-}
-
-static inline void destroy_metadata_completion(struct metadata_completion *p)
-{
-    uv_cond_destroy(&p->cond);
-    uv_mutex_destroy(&p->mutex);
-}
-
-static inline void wait_for_metadata_completion(struct metadata_completion *p)
-{
-    uv_mutex_lock(&p->mutex);
-    while (0 == p->completed) {
-        uv_cond_wait(&p->cond, &p->mutex);
-    }
-    fatal_assert(1 == p->completed);
-    uv_mutex_unlock(&p->mutex);
-}
-
-static inline void metadata_complete(struct metadata_completion *p)
-{
-    uv_mutex_lock(&p->mutex);
-    p->completed = 1;
-    uv_mutex_unlock(&p->mutex);
-    uv_cond_broadcast(&p->cond);
-}
-
-//extern uv_mutex_t metadata_async_lock;
+#define METADATA_DATABASE_CMD_Q_MAX_SIZE (8192)     // Max queue size; callers will block until there is room
+#define METADATA_MAINTENANCE_FIRST_CHECK (180)      // Maintenace first run after agent startup in seconds
+#define METADATA_MAINTENANCE_RETRY (60)             // Retry run if already running Or last run did actual work
+#define METADATA_MAINTENANCE_INTERVAL (3600)        // Repeat maintenance after latest successful
+#define MAX_METADATA_CLEANUP (500)                  // Maximum metadata write operations (e.g  deletes before retrying)
+#define METADATA_MAX_BATCH_SIZE (64)                // Maximum commands to execute before running the event loop
 
 enum metadata_database_opcode {
     METADATA_DATABASE_NOOP = 0,
@@ -79,11 +37,10 @@ enum metadata_database_opcode {
 
 #define MAX_PARAM_LIST  (4)
 
-#define DEF METADATA_MAX_BATCH_SIZE
 struct metadata_database_cmd {
     enum metadata_database_opcode opcode;
+    struct completion *completion;
     const void *param[MAX_PARAM_LIST];
-    struct metadata_completion *completion;
 };
 
 struct metadata_database_cmdqueue {
@@ -91,27 +48,37 @@ struct metadata_database_cmdqueue {
     struct metadata_database_cmd cmd_array[METADATA_DATABASE_CMD_Q_MAX_SIZE];
 };
 
+typedef enum {
+    METADATA_FLAG_CLEAR     = 0,
+    METADATA_FLAG_CLEANUP   = (1 << 0), // Cleanup is running
+    METADATA_FLAG_SHUTDOWN  = (1 << 1), // Shutting down
+} METADATA_FLAG;
+
+
+#define metadata_flag_check(target_flags, flag) (__atomic_load_n(&((target_flags)->flags), __ATOMIC_SEQ_CST) & (flag))
+#define metadata_flag_set(target_flags, flag)   __atomic_or_fetch(&((target_flags)->flags), (flag), __ATOMIC_SEQ_CST)
+#define metadata_flag_clear(target_flags, flag) __atomic_and_fetch(&((target_flags)->flags), ~(flag), __ATOMIC_SEQ_CST)
+
 struct metadata_database_worker_config {
     uv_thread_t thread;
-    time_t startup_time;           // When the sync thread started
-    unsigned max_batch;
+    time_t check_metadata_after;
     unsigned max_commands_in_queue;
     volatile unsigned queue_size;
-    int is_shutting_down;
     uv_loop_t *loop;
     uv_async_t async;
-    time_t check_metadata_after;
-    int metadata_cleanup_running;
+    METADATA_FLAG flags;
     uint64_t row_id;
+    struct completion init_complete;
     /* FIFO command queue */
     uv_mutex_t cmd_mutex;
     uv_cond_t cmd_cond;
     struct metadata_database_cmdqueue cmd_queue;
 };
 
-void metadata_sync_init(struct metadata_database_worker_config *metasync_worker);
-//int metadata_database_enq_cmd_noblock(struct metadata_database_worker_config *wc, struct metadata_database_cmd *cmd);
-//void metadata_database_enq_cmd(struct metadata_database_worker_config *wc, struct metadata_database_cmd *cmd);
+// To initialize and shutdown
+void metadata_sync_init(void);
+void metadata_sync_shutdown(void);
+
 void queue_dimension_update_metadata(RRDDIM *rd);
 void queue_chart_update_metadata(RRDSET *st);
 void queue_dimension_update_flags(RRDDIM *rd);
@@ -120,5 +87,4 @@ void queue_host_update_info(const char *machine_guid);
 void queue_delete_dimension_uuid(uuid_t *uuid);
 void queue_store_claim_id(uuid_t *host_uuid, uuid_t *claim_uuid);
 void queue_store_host_labels(const char *machine_guid);
-void metadata_sync_exit(void);
 #endif //NETDATA_SQLITE_METADATA_H
