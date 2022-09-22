@@ -1478,9 +1478,9 @@ failed:
 #define SQL_GET_NODE_INSTANCE_LIST "select ni.node_id, ni.host_id, h.hostname " \
     "from node_instance ni, host h where ni.host_id = h.host_id;"
 
-struct  node_instance_list *get_node_list(void)
+struct node_instance_list *get_node_list(void)
 {
-    struct  node_instance_list *node_list = NULL;
+    struct node_instance_list *node_list = NULL;
     sqlite3_stmt *res = NULL;
     int rc;
 
@@ -1508,6 +1508,7 @@ struct  node_instance_list *get_node_list(void)
     node_list = callocz(row + 1, sizeof(*node_list));
     int max_rows = row;
     row = 0;
+    // TODO: Check to remove lock
     rrd_rdlock();
     while (sqlite3_step_monitored(res) == SQLITE_ROW) {
         if (sqlite3_column_bytes(res, 0) == sizeof(uuid_t))
