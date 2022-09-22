@@ -58,7 +58,7 @@ extern void sql_close_database(void);
 
 // Helpers
 extern int bind_text_null(sqlite3_stmt *res, int position, const char *text, bool can_be_null);
-extern int prepare_statement(sqlite3 *database, char *query, sqlite3_stmt **statement);
+extern int prepare_statement(sqlite3 *database, const char *query, sqlite3_stmt **statement);
 extern int execute_insert(sqlite3_stmt *res);
 extern void db_execute(const char *cmd);
 extern int file_is_migrated(char *path);
@@ -71,7 +71,6 @@ int exec_statement_with_uuid(const char *sql, uuid_t *uuid);
 // Look up functions
 extern int find_dimension_uuid(RRDSET *st, RRDDIM *rd, uuid_t *store_uuid);
 extern int find_chart_uuid(RRDHOST *host, const char *type, const char *id, const char *name, uuid_t *store_uuid);
-extern int find_uuid_type(uuid_t *uuid);
 extern int get_node_id(uuid_t *host_id, uuid_t *node_id);
 extern int get_host_id(uuid_t *node_id, uuid_t *host_id);
 extern struct node_instance_list *get_node_list(void);

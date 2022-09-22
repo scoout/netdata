@@ -142,7 +142,7 @@ static void release_statement(void *statement)
         error_report("Failed to finalize statement, rc = %d", rc);
 }
 
-int prepare_statement(sqlite3 *database, char *query, sqlite3_stmt **statement)
+int prepare_statement(sqlite3 *database, const char *query, sqlite3_stmt **statement)
 {
     static __thread uint32_t keys_used = 0;
 
