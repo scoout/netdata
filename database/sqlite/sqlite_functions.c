@@ -466,40 +466,6 @@ void sql_close_database(void)
     return;
 }
 
-#define FIND_UUID_TYPE  "select 1 from host where host_id = @uuid union select 2 from chart where chart_id = @uuid union select 3 from dimension where dim_id = @uuid;"
-
-int find_uuid_type(uuid_t *uuid)
-{
-    static __thread sqlite3_stmt *res = NULL;
-    int rc;
-    int uuid_type = 3;
-
-    if (unlikely(!res)) {
-        rc = prepare_statement(db_meta, FIND_UUID_TYPE, &res);
-        if (rc != SQLITE_OK) {
-            error_report("Failed to bind prepare statement to find UUID type in the database");
-            return 0;
-        }
-    }
-
-    rc = sqlite3_bind_blob(res, 1, uuid, sizeof(*uuid), SQLITE_STATIC);
-    if (unlikely(rc != SQLITE_OK))
-        goto bind_fail;
-
-    rc = sqlite3_step_monitored(res);
-    if (likely(rc == SQLITE_ROW))
-        uuid_type = sqlite3_column_int(res, 0);
-
-    rc = sqlite3_reset(res);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Failed to reset statement during find uuid type, rc = %d", rc);
-
-    return uuid_type;
-
-bind_fail:
-    return 0;
-}
-
 // Do a database lookup to find the uuid of a dimension
 //  Return 0 if uuid is found and store it in *store_uuid
 //         1 if no uuid is found (needs to be created)
