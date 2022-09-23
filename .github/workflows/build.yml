@@ -96,7 +96,7 @@ jobs:
     strategy:
       matrix:
         arch:
-          - x86_generic
+          - i386
           - armv7l
           - aarch64
           - ppc64le
