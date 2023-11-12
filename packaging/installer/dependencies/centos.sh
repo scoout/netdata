@@ -5,30 +5,32 @@
 set -e
 
 declare -a package_tree=(
-  gcc
-  gcc-c++
-  make
   autoconf
   autoconf-archive
   automake
-  libatomic
-  libtool
-  pkgconfig
   cmake
-  nmap-ncat
-  zlib-devel
-  libuuid-devel
-  libmnl-devel
-  json-c-devel
-  libuv-devel
-  lz4-devel
-  openssl-devel
-  python3
-  elfutils-libelf-devel
-  git
-  tar
   curl
+  elfutils-libelf-devel
+  findutils
+  gcc
+  gcc-c++
+  git
   gzip
+  json-c-devel
+  libatomic
+  libmnl-devel
+  libtool
+  libuuid-devel
+  libuv-devel
+  libyaml-devel
+  lz4-devel
+  make
+  openssl-devel
+  pkgconfig
+  python3
+  systemd-devel
+  tar
+  zlib-devel
 )
 
 os_version() {
@@ -97,7 +99,7 @@ check_flags() {
 
 validate_tree_centos() {
   local opts=
-  export local package_manager=
+  package_manager=
   if [[ "${NON_INTERACTIVE}" == "1" ]]; then
     echo >&2 "Running in non-interactive mode"
     opts="-y"

@@ -34,26 +34,31 @@ bool rrdcalctemplate_check_rrdset_conditions(RRDCALCTEMPLATE *rt, RRDSET *st, RR
     if(rt->foreach_dimension_pattern && !rrdset_number_of_dimensions(st))
         return false;
 
-    if (rt->charts_pattern && !simple_pattern_matches(rt->charts_pattern, rrdset_name(st)) && !simple_pattern_matches(rt->charts_pattern, rrdset_id(st)))
+    if (rt->charts_pattern && !simple_pattern_matches_string(rt->charts_pattern, st->name) && !simple_pattern_matches_string(rt->charts_pattern, st->id))
         return false;
 
-    if (rt->family_pattern && !simple_pattern_matches(rt->family_pattern, rrdset_family(st)))
+    if (rt->module_pattern && !simple_pattern_matches_string(rt->module_pattern, st->module_name))
         return false;
 
-    if (rt->module_pattern && !simple_pattern_matches(rt->module_pattern, rrdset_module_name(st)))
+    if (rt->plugin_pattern && !simple_pattern_matches_string(rt->plugin_pattern, st->plugin_name))
         return false;
 
-    if (rt->plugin_pattern && !simple_pattern_matches(rt->plugin_pattern, rrdset_plugin_name(st)))
+    if(host->rrdlabels && rt->host_labels_pattern && !rrdlabels_match_simple_pattern_parsed(host->rrdlabels,
+                                                                                            rt->host_labels_pattern,
+                                                                                            '=', NULL))
         return false;
 
-    if(host->rrdlabels && rt->host_labels_pattern && !rrdlabels_match_simple_pattern_parsed(host->rrdlabels, rt->host_labels_pattern, '='))
+    if(st->rrdlabels && rt->chart_labels_pattern && !rrdlabels_match_simple_pattern_parsed(st->rrdlabels,
+                                                                                            rt->chart_labels_pattern,
+                                                                                            '=', NULL))
         return false;
 
     return true;
 }
 
 void rrdcalctemplate_check_rrddim_conditions_and_link(RRDCALCTEMPLATE *rt, RRDSET *st, RRDDIM *rd, RRDHOST *host) {
-    if (simple_pattern_matches(rt->foreach_dimension_pattern, rrddim_id(rd)) || simple_pattern_matches(rt->foreach_dimension_pattern, rrddim_name(rd))) {
+    if (simple_pattern_matches_string(rt->foreach_dimension_pattern, rd->id) ||
+        simple_pattern_matches_string(rt->foreach_dimension_pattern, rd->name)) {
         char *overwrite_alert_name = rrdcalc_alert_name_with_dimension(
             rrdcalctemplate_name(rt), string_strlen(rt->name), rrddim_name(rd), string_strlen(rd->name));
         rrdcalc_add_from_rrdcalctemplate(host, rt, st, overwrite_alert_name, rrddim_name(rd));
@@ -92,9 +97,6 @@ static void rrdcalctemplate_free_internals(RRDCALCTEMPLATE *rt) {
     expression_free(rt->warning);
     expression_free(rt->critical);
 
-    string_freez(rt->family_match);
-    simple_pattern_free(rt->family_pattern);
-
     string_freez(rt->plugin_match);
     simple_pattern_free(rt->plugin_pattern);
 
@@ -117,8 +119,10 @@ static void rrdcalctemplate_free_internals(RRDCALCTEMPLATE *rt) {
     string_freez(rt->dimensions);
     string_freez(rt->foreach_dimension);
     string_freez(rt->host_labels);
+    string_freez(rt->chart_labels);
     simple_pattern_free(rt->foreach_dimension_pattern);
     simple_pattern_free(rt->host_labels_pattern);
+    simple_pattern_free(rt->chart_labels_pattern);
 }
 
 void rrdcalctemplate_free_unused_rrdcalctemplate_loaded_from_config(RRDCALCTEMPLATE *rt) {
@@ -133,7 +137,7 @@ static void rrdcalctemplate_insert_callback(const DICTIONARY_ITEM *item __maybe_
     bool *added = added_bool;
     *added = true;
 
-    debug(D_HEALTH, "Health configuration adding template '%s'"
+    netdata_log_debug(D_HEALTH, "Health configuration adding template '%s'"
                     ": context '%s'"
                     ", exec '%s'"
                     ", recipient '%s'"
@@ -189,7 +193,8 @@ static void rrdcalctemplate_delete_callback(const DICTIONARY_ITEM *item __maybe_
 
 void rrdcalctemplate_index_init(RRDHOST *host) {
     if(!host->rrdcalctemplate_root_index) {
-        host->rrdcalctemplate_root_index = dictionary_create(DICT_OPTION_DONT_OVERWRITE_VALUE);
+        host->rrdcalctemplate_root_index = dictionary_create_advanced(DICT_OPTION_DONT_OVERWRITE_VALUE | DICT_OPTION_FIXED_SIZE,
+                                                                      &dictionary_stats_category_rrdhealth, sizeof(RRDCALCTEMPLATE));
 
         dictionary_register_insert_callback(host->rrdcalctemplate_root_index, rrdcalctemplate_insert_callback, NULL);
         dictionary_register_delete_callback(host->rrdcalctemplate_root_index, rrdcalctemplate_delete_callback, host);
@@ -206,28 +211,24 @@ inline void rrdcalctemplate_delete_all(RRDHOST *host) {
 }
 
 #define RRDCALCTEMPLATE_MAX_KEY_SIZE 1024
-static size_t rrdcalctemplate_key(char *dst, size_t dst_len, const char *name, const char *family_match) {
-    return snprintfz(dst, dst_len, "%s/%s", name, (family_match && *family_match)?family_match:"*");
-}
-
 void rrdcalctemplate_add_from_config(RRDHOST *host, RRDCALCTEMPLATE *rt) {
     if(unlikely(!rt->context)) {
-        error("Health configuration for template '%s' does not have a context", rrdcalctemplate_name(rt));
+        netdata_log_error("Health configuration for template '%s' does not have a context", rrdcalctemplate_name(rt));
         return;
     }
 
     if(unlikely(!rt->update_every)) {
-        error("Health configuration for template '%s' has no frequency (parameter 'every'). Ignoring it.", rrdcalctemplate_name(rt));
+        netdata_log_error("Health configuration for template '%s' has no frequency (parameter 'every'). Ignoring it.", rrdcalctemplate_name(rt));
         return;
     }
 
     if(unlikely(!RRDCALCTEMPLATE_HAS_DB_LOOKUP(rt) && !rt->calculation && !rt->warning && !rt->critical)) {
-        error("Health configuration for template '%s' is useless (no calculation, no warning and no critical evaluation)", rrdcalctemplate_name(rt));
+        netdata_log_error("Health configuration for template '%s' is useless (no calculation, no warning and no critical evaluation)", rrdcalctemplate_name(rt));
         return;
     }
 
     char key[RRDCALCTEMPLATE_MAX_KEY_SIZE + 1];
-    size_t key_len = rrdcalctemplate_key(key, RRDCALCTEMPLATE_MAX_KEY_SIZE, rrdcalctemplate_name(rt), rrdcalctemplate_family_match(rt));
+    size_t key_len = snprintfz(key, RRDCALCTEMPLATE_MAX_KEY_SIZE, "%s", rrdcalctemplate_name(rt));
 
     bool added = false;
     dictionary_set_advanced(host->rrdcalctemplate_root_index, key, (ssize_t)(key_len + 1), rt, sizeof(*rt), &added);
@@ -235,7 +236,7 @@ void rrdcalctemplate_add_from_config(RRDHOST *host, RRDCALCTEMPLATE *rt) {
     if(added)
         freez(rt);
     else {
-        info("Health configuration template '%s' already exists for host '%s'.", rrdcalctemplate_name(rt), rrdhost_hostname(host));
+        netdata_log_info("Health configuration template '%s' already exists for host '%s'.", rrdcalctemplate_name(rt), rrdhost_hostname(host));
         rrdcalctemplate_free_unused_rrdcalctemplate_loaded_from_config(rt);
     }
 }

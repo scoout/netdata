@@ -3,8 +3,9 @@
 #ifndef NETDATA_EBPF_PROCESS_H
 #define NETDATA_EBPF_PROCESS_H 1
 
-// Module name
+// Module name & description
 #define NETDATA_EBPF_MODULE_NAME_PROCESS "process"
+#define NETDATA_EBPF_MODULE_PROCESS_DESC "Monitor information about process life. This thread is integrated with apps and cgroup."
 
 // Groups used on Dashboard
 #define NETDATA_PROCESS_GROUP "processes"
@@ -39,14 +40,20 @@
 #define NETDATA_SYSTEMD_PROCESS_EXIT_CONTEXT "services.task_exit"
 #define NETDATA_SYSTEMD_PROCESS_ERROR_CONTEXT "services.task_error"
 
-#define NETDATA_EBPF_CGROUP_UPDATE 10
+#define NETDATA_EBPF_CGROUP_UPDATE 30
 
-// Statistical information
-enum netdata_ebpf_thread_stats{
-    NETDATA_EBPF_THREAD_STAT_TOTAL,
-    NETDATA_EBPF_THREAD_STAT_RUNNING,
-
-    NETDATA_EBPF_THREAD_STAT_END
+enum netdata_ebpf_stats_order {
+    NETDATA_EBPF_ORDER_STAT_THREADS = 140000,
+    NETDATA_EBPF_ORDER_STAT_LIFE_TIME,
+    NETDATA_EBPF_ORDER_STAT_LOAD_METHOD,
+    NETDATA_EBPF_ORDER_STAT_KERNEL_MEMORY,
+    NETDATA_EBPF_ORDER_STAT_HASH_TABLES,
+    NETDATA_EBPF_ORDER_STAT_HASH_CORE,
+    NETDATA_EBPF_ORDER_STAT_HASH_GLOBAL_TABLE_TOTAL,
+    NETDATA_EBPF_ORDER_STAT_HASH_PID_TABLE_ADDED,
+    NETDATA_EBPF_ORDER_STAT_HASH_PID_TABLE_REMOVED,
+    NETATA_EBPF_ORDER_STAT_ARAL_BEGIN,
+    NETDATA_EBPF_ORDER_FUNCTION_PER_THREAD,
 };
 
 enum netdata_ebpf_load_mode_stats{
@@ -54,6 +61,13 @@ enum netdata_ebpf_load_mode_stats{
     NETDATA_EBPF_LOAD_STAT_CORE,
 
     NETDATA_EBPF_LOAD_STAT_END
+};
+
+enum netdata_ebpf_thread_per_core{
+    NETDATA_EBPF_THREAD_PER_CORE,
+    NETDATA_EBPF_THREAD_UNIQUE,
+
+    NETDATA_EBPF_PER_CORE_END
 };
 
 // Index from kernel
@@ -84,17 +98,6 @@ typedef enum netdata_publish_process {
 
     NETDATA_KEY_PUBLISH_PROCESS_END
 } netdata_publish_process_t;
-
-typedef struct ebpf_process_publish_apps {
-    // Number of calls during the last read
-    uint64_t call_do_exit;
-    uint64_t call_release_task;
-    uint64_t create_process;
-    uint64_t create_thread;
-
-    // Number of errors during the last read
-    uint64_t task_err;
-} ebpf_process_publish_apps_t;
 
 enum ebpf_process_tables {
     NETDATA_PROCESS_PID_TABLE,

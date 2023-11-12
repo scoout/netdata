@@ -11,10 +11,45 @@ extern "C" {
 #include <config.h>
 #endif
 
+#if defined(ENABLE_BROTLIENC) && defined(ENABLE_BROTLIDEC)
+#define ENABLE_BROTLI 1
+#endif
+
+#ifdef ENABLE_OPENSSL
+#define ENABLE_HTTPS 1
+#endif
+
+#ifdef HAVE_LIBDATACHANNEL
+#define ENABLE_WEBRTC 1
+#endif
+
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+
+#define JUDYHS_INDEX_SIZE_ESTIMATE(key_bytes) (((key_bytes) + sizeof(Word_t) - 1) / sizeof(Word_t) * 4)
+
+#if defined(NETDATA_DEV_MODE) && !defined(NETDATA_INTERNAL_CHECKS)
+#define NETDATA_INTERNAL_CHECKS 1
+#endif
+
+#if SIZEOF_VOID_P == 4
+#define ENV32BIT 1
+#else
+#define ENV64BIT 1
+#endif
+
+// NETDATA_TRACE_ALLOCATIONS does not work under musl libc, so don't enable it
+//#if defined(NETDATA_INTERNAL_CHECKS) && !defined(NETDATA_TRACE_ALLOCATIONS)
+//#define NETDATA_TRACE_ALLOCATIONS 1
+//#endif
+
 #define OS_LINUX   1
 #define OS_FREEBSD 2
 #define OS_MACOS   3
 
+#define MALLOC_ALIGNMENT (sizeof(uintptr_t) * 2)
+#define size_t_atomic_count(op, var, size) __atomic_## op ##_fetch(&(var), size, __ATOMIC_RELAXED)
+#define size_t_atomic_bytes(op, var, size) __atomic_## op ##_fetch(&(var), ((size) % MALLOC_ALIGNMENT)?((size) + MALLOC_ALIGNMENT - ((size) % MALLOC_ALIGNMENT)):(size), __ATOMIC_RELAXED)
 
 // ----------------------------------------------------------------------------
 // system include files for all netdata C programs
@@ -156,9 +191,7 @@ extern "C" {
 #include <stdint.h>
 #endif
 
-#ifdef NETDATA_WITH_ZLIB
 #include <zlib.h>
-#endif
 
 #ifdef HAVE_CAPABILITY
 #include <sys/capability.h>
@@ -208,6 +241,10 @@ extern "C" {
 #define WARNUNUSED
 #endif
 
+void aral_judy_init(void);
+size_t judy_aral_overhead(void);
+size_t judy_aral_structures(void);
+
 #define ABS(x) (((x) < 0)? (-(x)) : (x))
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -216,8 +253,9 @@ extern "C" {
 
 // ---------------------------------------------------------------------------------------------
 // double linked list management
+// inspired by https://github.com/troydhanson/uthash/blob/master/src/utlist.h
 
-#define DOUBLE_LINKED_LIST_PREPEND_UNSAFE(head, item, prev, next)                              \
+#define DOUBLE_LINKED_LIST_PREPEND_ITEM_UNSAFE(head, item, prev, next)                         \
     do {                                                                                       \
         (item)->next = (head);                                                                 \
                                                                                                \
@@ -231,121 +269,308 @@ extern "C" {
         (head) = (item);                                                                       \
     } while (0)
 
-#define DOUBLE_LINKED_LIST_APPEND_UNSAFE(head, item, prev, next)                               \
+#define DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(head, item, prev, next)                          \
     do {                                                                                       \
+                                                                                               \
+        (item)->next = NULL;                                                                   \
+                                                                                               \
         if(likely(head)) {                                                                     \
             (item)->prev = (head)->prev;                                                       \
             (head)->prev->next = (item);                                                       \
             (head)->prev = (item);                                                             \
-            (item)->next = NULL;                                                               \
         }                                                                                      \
         else {                                                                                 \
+            (item)->prev = (item);                                                             \
             (head) = (item);                                                                   \
-            (head)->prev = (head);                                                             \
-            (head)->next = NULL;                                                               \
         }                                                                                      \
                                                                                                \
     } while (0)
 
-#define DOUBLE_LINKED_LIST_REMOVE_UNSAFE(head, item, prev, next)                               \
+#define DOUBLE_LINKED_LIST_REMOVE_ITEM_UNSAFE(head, item, prev, next)                          \
     do {                                                                                       \
         fatal_assert((head) != NULL);                                                          \
         fatal_assert((item)->prev != NULL);                                                    \
                                                                                                \
-        if((item)->prev == (item)) {                                                           \
+        if((item)->prev == (item))                                                             \
             /* it is the only item in the list */                                              \
             (head) = NULL;                                                                     \
-        }                                                                                      \
+                                                                                               \
         else if((item) == (head)) {                                                            \
             /* it is the first item */                                                         \
+            fatal_assert((item)->next != NULL);                                                \
             (item)->next->prev = (item)->prev;                                                 \
             (head) = (item)->next;                                                             \
         }                                                                                      \
         else {                                                                                 \
+            /* it is any other item */                                                         \
             (item)->prev->next = (item)->next;                                                 \
-            if ((item)->next) {                                                                \
+                                                                                               \
+            if ((item)->next)                                                                  \
                 (item)->next->prev = (item)->prev;                                             \
-            }                                                                                  \
-            else {                                                                             \
+            else                                                                               \
                 (head)->prev = (item)->prev;                                                   \
-            }                                                                                  \
         }                                                                                      \
                                                                                                \
         (item)->next = NULL;                                                                   \
         (item)->prev = NULL;                                                                   \
     } while (0)
 
+#define DOUBLE_LINKED_LIST_INSERT_ITEM_BEFORE_UNSAFE(head, existing, item, prev, next)         \
+    do {                                                                                       \
+        if (existing) {                                                                        \
+            fatal_assert((head) != NULL);                                                      \
+            fatal_assert((item) != NULL);                                                      \
+                                                                                               \
+            (item)->next = (existing);                                                         \
+            (item)->prev = (existing)->prev;                                                   \
+            (existing)->prev = (item);                                                         \
+                                                                                               \
+            if ((head) == (existing))                                                          \
+                (head) = (item);                                                               \
+            else                                                                               \
+                (item)->prev->next = (item);                                                   \
+                                                                                               \
+        }                                                                                      \
+        else                                                                                   \
+            DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(head, item, prev, next);                     \
+                                                                                               \
+    } while (0)
+
+#define DOUBLE_LINKED_LIST_INSERT_ITEM_AFTER_UNSAFE(head, existing, item, prev, next)          \
+    do {                                                                                       \
+        if (existing) {                                                                        \
+            fatal_assert((head) != NULL);                                                      \
+            fatal_assert((item) != NULL);                                                      \
+                                                                                               \
+            (item)->next = (existing)->next;                                                   \
+            (item)->prev = (existing);                                                         \
+            (existing)->next = (item);                                                         \
+                                                                                               \
+            if ((item)->next)                                                                  \
+                (item)->next->prev = (item);                                                   \
+            else                                                                               \
+                (head)->prev = (item);                                                         \
+        }                                                                                      \
+        else                                                                                   \
+            DOUBLE_LINKED_LIST_PREPEND_ITEM_UNSAFE(head, item, prev, next);                    \
+                                                                                               \
+    } while (0)
+
+#define DOUBLE_LINKED_LIST_APPEND_LIST_UNSAFE(head, head2, prev, next)                         \
+    do {                                                                                       \
+        if (head2) {                                                                           \
+            if (head) {                                                                        \
+                __typeof(head2) _head2_last_item = (head2)->prev;                              \
+                                                                                               \
+                (head2)->prev = (head)->prev;                                                  \
+                (head)->prev->next = (head2);                                                  \
+                                                                                               \
+                (head)->prev = _head2_last_item;                                               \
+            }                                                                                  \
+            else                                                                               \
+                (head) = (head2);                                                              \
+        }                                                                                      \
+    } while (0)
+
 #define DOUBLE_LINKED_LIST_FOREACH_FORWARD(head, var, prev, next)                              \
     for ((var) = (head); (var) ; (var) = (var)->next)
 
 #define DOUBLE_LINKED_LIST_FOREACH_BACKWARD(head, var, prev, next)                             \
-    for ((var) = (head)?(head)->prev:NULL; (var) && (var) != (head)->prev ; (var) = (var)->prev)
+    for ((var) = (head) ? (head)->prev : NULL ; (var) ; (var) = ((var) == (head)) ? NULL : (var)->prev)
 
 // ---------------------------------------------------------------------------------------------
 
+#include "storage_number/storage_number.h"
 
-extern void netdata_fix_chart_id(char *s);
-extern void netdata_fix_chart_name(char *s);
+typedef struct storage_point {
+    NETDATA_DOUBLE min;     // when count > 1, this is the minimum among them
+    NETDATA_DOUBLE max;     // when count > 1, this is the maximum among them
+    NETDATA_DOUBLE sum;     // the point sum - divided by count gives the average
 
-extern void strreverse(char* begin, char* end);
-extern char *mystrsep(char **ptr, char *s);
-extern char *trim(char *s); // remove leading and trailing spaces; may return NULL
-extern char *trim_all(char *buffer); // like trim(), but also remove duplicate spaces inside the string; may return NULL
+    // end_time - start_time = point duration
+    time_t start_time_s;    // the time the point starts
+    time_t end_time_s;      // the time the point ends
 
-extern int  vsnprintfz(char *dst, size_t n, const char *fmt, va_list args);
-extern int  snprintfz(char *dst, size_t n, const char *fmt, ...) PRINTFLIKE(3, 4);
+    uint32_t count;         // the number of original points aggregated
+    uint32_t anomaly_count; // the number of original points found anomalous
+
+    SN_FLAGS flags;         // flags stored with the point
+} STORAGE_POINT;
+
+#define storage_point_unset(x)                     do { \
+    (x).min = (x).max = (x).sum = NAN;                  \
+    (x).count = 0;                                      \
+    (x).anomaly_count = 0;                              \
+    (x).flags = SN_FLAG_NONE;                           \
+    (x).start_time_s = 0;                               \
+    (x).end_time_s = 0;                                 \
+    } while(0)
+
+#define storage_point_empty(x, start_s, end_s)     do { \
+    (x).min = (x).max = (x).sum = NAN;                  \
+    (x).count = 1;                                      \
+    (x).anomaly_count = 0;                              \
+    (x).flags = SN_FLAG_NONE;                           \
+    (x).start_time_s = start_s;                         \
+    (x).end_time_s = end_s;                             \
+    } while(0)
+
+#define STORAGE_POINT_UNSET (STORAGE_POINT){ .min = NAN, .max = NAN, .sum = NAN, .count = 0, .anomaly_count = 0, .flags = SN_FLAG_NONE, .start_time_s = 0, .end_time_s = 0 }
+
+#define storage_point_is_unset(x) (!(x).count)
+#define storage_point_is_gap(x) (!netdata_double_isnumber((x).sum))
+#define storage_point_is_zero(x) (!(x).count || (netdata_double_is_zero((x).min) && netdata_double_is_zero((x).max) && netdata_double_is_zero((x).sum) && (x).anomaly_count == 0))
+
+#define storage_point_merge_to(dst, src) do {           \
+        if(storage_point_is_unset(dst))                 \
+            (dst) = (src);                              \
+                                                        \
+        else if(!storage_point_is_unset(src) &&         \
+                !storage_point_is_gap(src)) {           \
+                                                        \
+            if((src).start_time_s < (dst).start_time_s) \
+                (dst).start_time_s = (src).start_time_s;\
+                                                        \
+            if((src).end_time_s > (dst).end_time_s)     \
+                (dst).end_time_s = (src).end_time_s;    \
+                                                        \
+            if((src).min < (dst).min)                   \
+                (dst).min = (src).min;                  \
+                                                        \
+            if((src).max > (dst).max)                   \
+                (dst).max = (src).max;                  \
+                                                        \
+            (dst).sum += (src).sum;                     \
+                                                        \
+            (dst).count += (src).count;                 \
+            (dst).anomaly_count += (src).anomaly_count; \
+                                                        \
+            (dst).flags |= (src).flags & SN_FLAG_RESET; \
+        }                                               \
+} while(0)
+
+#define storage_point_add_to(dst, src) do {             \
+        if(storage_point_is_unset(dst))                 \
+            (dst) = (src);                              \
+                                                        \
+        else if(!storage_point_is_unset(src) &&         \
+                !storage_point_is_gap(src)) {           \
+                                                        \
+            if((src).start_time_s < (dst).start_time_s) \
+                (dst).start_time_s = (src).start_time_s;\
+                                                        \
+            if((src).end_time_s > (dst).end_time_s)     \
+                (dst).end_time_s = (src).end_time_s;    \
+                                                        \
+            (dst).min += (src).min;                     \
+            (dst).max += (src).max;                     \
+            (dst).sum += (src).sum;                     \
+                                                        \
+            (dst).count += (src).count;                 \
+            (dst).anomaly_count += (src).anomaly_count; \
+                                                        \
+            (dst).flags |= (src).flags & SN_FLAG_RESET; \
+        }                                               \
+} while(0)
+
+#define storage_point_make_positive(sp) do {            \
+        if(!storage_point_is_unset(sp) &&               \
+           !storage_point_is_gap(sp)) {                 \
+                                                        \
+            if(unlikely(signbit((sp).sum)))             \
+                (sp).sum = -(sp).sum;                   \
+                                                        \
+            if(unlikely(signbit((sp).min)))             \
+                (sp).min = -(sp).min;                   \
+                                                        \
+            if(unlikely(signbit((sp).max)))             \
+                (sp).max = -(sp).max;                   \
+                                                        \
+            if(unlikely((sp).min > (sp).max)) {         \
+                NETDATA_DOUBLE t = (sp).min;            \
+                (sp).min = (sp).max;                    \
+                (sp).max = t;                           \
+            }                                           \
+        }                                               \
+} while(0)
+
+#define storage_point_anomaly_rate(sp) \
+    (NETDATA_DOUBLE)(storage_point_is_unset(sp) ? 0.0 : (NETDATA_DOUBLE)((sp).anomaly_count) * 100.0 / (NETDATA_DOUBLE)((sp).count))
+
+#define storage_point_average_value(sp) \
+    ((sp).count ? (sp).sum / (NETDATA_DOUBLE)((sp).count) : 0.0)
+
+// ---------------------------------------------------------------------------------------------
+
+void netdata_fix_chart_id(char *s);
+void netdata_fix_chart_name(char *s);
+
+int madvise_sequential(void *mem, size_t len);
+int madvise_random(void *mem, size_t len);
+int madvise_dontfork(void *mem, size_t len);
+int madvise_willneed(void *mem, size_t len);
+int madvise_dontneed(void *mem, size_t len);
+int madvise_dontdump(void *mem, size_t len);
+int madvise_mergeable(void *mem, size_t len);
+
+int  vsnprintfz(char *dst, size_t n, const char *fmt, va_list args);
+int  snprintfz(char *dst, size_t n, const char *fmt, ...) PRINTFLIKE(3, 4);
 
 // memory allocation functions that handle failures
-#ifdef NETDATA_LOG_ALLOCATIONS
-extern __thread size_t log_thread_memory_allocations;
-#define strdupz(s) strdupz_int(__FILE__, __FUNCTION__, __LINE__, s)
-#define callocz(nmemb, size) callocz_int(__FILE__, __FUNCTION__, __LINE__, nmemb, size)
-#define mallocz(size) mallocz_int(__FILE__, __FUNCTION__, __LINE__, size)
-#define reallocz(ptr, size) reallocz_int(__FILE__, __FUNCTION__, __LINE__, ptr, size)
-#define freez(ptr) freez_int(__FILE__, __FUNCTION__, __LINE__, ptr)
-#define log_allocations() log_allocations_int(__FILE__, __FUNCTION__, __LINE__)
+#ifdef NETDATA_TRACE_ALLOCATIONS
+int malloc_trace_walkthrough(int (*callback)(void *item, void *data), void *data);
 
-extern char *strdupz_int(const char *file, const char *function, const unsigned long line, const char *s);
-extern void *callocz_int(const char *file, const char *function, const unsigned long line, size_t nmemb, size_t size);
-extern void *mallocz_int(const char *file, const char *function, const unsigned long line, size_t size);
-extern void *reallocz_int(const char *file, const char *function, const unsigned long line, void *ptr, size_t size);
-extern void freez_int(const char *file, const char *function, const unsigned long line, void *ptr);
-extern void log_allocations_int(const char *file, const char *function, const unsigned long line);
+#define strdupz(s) strdupz_int(s, __FILE__, __FUNCTION__, __LINE__)
+#define callocz(nmemb, size) callocz_int(nmemb, size, __FILE__, __FUNCTION__, __LINE__)
+#define mallocz(size) mallocz_int(size, __FILE__, __FUNCTION__, __LINE__)
+#define reallocz(ptr, size) reallocz_int(ptr, size, __FILE__, __FUNCTION__, __LINE__)
+#define freez(ptr) freez_int(ptr, __FILE__, __FUNCTION__, __LINE__)
+#define mallocz_usable_size(ptr) mallocz_usable_size_int(ptr, __FILE__, __FUNCTION__, __LINE__)
 
-#else // NETDATA_LOG_ALLOCATIONS
-extern char *strdupz(const char *s) MALLOCLIKE NEVERNULL;
-extern void *callocz(size_t nmemb, size_t size) MALLOCLIKE NEVERNULL;
-extern void *mallocz(size_t size) MALLOCLIKE NEVERNULL;
-extern void *reallocz(void *ptr, size_t size) MALLOCLIKE NEVERNULL;
-extern void freez(void *ptr);
-#endif // NETDATA_LOG_ALLOCATIONS
+char *strdupz_int(const char *s, const char *file, const char *function, size_t line);
+void *callocz_int(size_t nmemb, size_t size, const char *file, const char *function, size_t line);
+void *mallocz_int(size_t size, const char *file, const char *function, size_t line);
+void *reallocz_int(void *ptr, size_t size, const char *file, const char *function, size_t line);
+void freez_int(void *ptr, const char *file, const char *function, size_t line);
+size_t mallocz_usable_size_int(void *ptr, const char *file, const char *function, size_t line);
 
-extern void json_escape_string(char *dst, const char *src, size_t size);
-extern void json_fix_string(char *s);
+#else // NETDATA_TRACE_ALLOCATIONS
+char *strdupz(const char *s) MALLOCLIKE NEVERNULL;
+void *callocz(size_t nmemb, size_t size) MALLOCLIKE NEVERNULL;
+void *mallocz(size_t size) MALLOCLIKE NEVERNULL;
+void *reallocz(void *ptr, size_t size) MALLOCLIKE NEVERNULL;
+void freez(void *ptr);
+#endif // NETDATA_TRACE_ALLOCATIONS
 
-extern void *netdata_mmap(const char *filename, size_t size, int flags, int ksm);
-extern int memory_file_save(const char *filename, void *mem, size_t size);
+void posix_memfree(void *ptr);
 
-extern int fd_is_valid(int fd);
+void json_escape_string(char *dst, const char *src, size_t size);
+void json_fix_string(char *s);
+
+void *netdata_mmap(const char *filename, size_t size, int flags, int ksm, bool read_only, int *open_fd);
+int netdata_munmap(void *ptr, size_t size);
+int memory_file_save(const char *filename, void *mem, size_t size);
+
+int fd_is_valid(int fd);
 
 extern struct rlimit rlimit_nofile;
 
 extern int enable_ksm;
 
-extern char *fgets_trim_len(char *buf, size_t buf_size, FILE *fp, size_t *len);
+char *fgets_trim_len(char *buf, size_t buf_size, FILE *fp, size_t *len);
 
-extern int verify_netdata_host_prefix();
+int verify_netdata_host_prefix();
 
-extern int recursively_delete_dir(const char *path, const char *reason);
+int recursively_delete_dir(const char *path, const char *reason);
 
 extern volatile sig_atomic_t netdata_exit;
 
 extern const char *program_version;
 
-extern char *strdupz_path_subpath(const char *path, const char *subpath);
-extern int path_is_dir(const char *path, const char *subpath);
-extern int path_is_file(const char *path, const char *subpath);
-extern void recursive_config_double_dir_load(
+char *strdupz_path_subpath(const char *path, const char *subpath);
+int path_is_dir(const char *path, const char *subpath);
+int path_is_file(const char *path, const char *subpath);
+void recursive_config_double_dir_load(
         const char *user_path
         , const char *stock_path
         , const char *subpath
@@ -353,8 +578,8 @@ extern void recursive_config_double_dir_load(
         , void *data
         , size_t depth
 );
-extern char *read_by_filename(char *filename, long *file_size);
-extern char *find_and_replace(const char *src, const char *find, const char *replace, const char *where);
+char *read_by_filename(const char *filename, long *file_size);
+char *find_and_replace(const char *src, const char *find, const char *replace, const char *where);
 
 /* fix for alpine linux */
 #ifndef RUSAGE_THREAD
@@ -376,23 +601,211 @@ extern char *find_and_replace(const char *src, const char *find, const char *rep
 #define UNUSED_FUNCTION(x) UNUSED_##x
 #endif
 
-#define error_report(x, args...) do { errno = 0; error(x, ##args); } while(0)
+#define error_report(x, args...) do { errno = 0; netdata_log_error(x, ##args); } while(0)
 
 // Taken from linux kernel
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 
+#ifdef ENV32BIT
+
+typedef struct bitmapX {
+    uint32_t bits;
+    uint32_t data[];
+} BITMAPX;
+
 typedef struct bitmap256 {
-    uint64_t data[4];
+    uint32_t bits;
+    uint32_t data[256 / 32];
 } BITMAP256;
 
-extern bool bitmap256_get_bit(BITMAP256 *ptr, uint8_t idx);
-extern void bitmap256_set_bit(BITMAP256 *ptr, uint8_t idx, bool value);
+typedef struct bitmap1024 {
+    uint32_t bits;
+    uint32_t data[1024 / 32];
+} BITMAP1024;
 
-extern void netdata_cleanup_and_exit(int ret) NORETURN;
-extern void send_statistics(const char *action, const char *action_result, const char *action_data);
+static inline BITMAPX *bitmapX_create(uint32_t bits) {
+    BITMAPX *bmp = (BITMAPX *)callocz(1, sizeof(BITMAPX) + sizeof(uint32_t) * ((bits + 31) / 32));
+    uint32_t *p = (uint32_t *)&bmp->bits;
+    *p = bits;
+    return bmp;
+}
+
+#define bitmapX_get_bit(ptr, idx) ((ptr)->data[(idx) >> 5] & (1U << ((idx) & 31)))
+#define bitmapX_set_bit(ptr, idx, value) do {           \
+    register uint32_t _bitmask = 1U << ((idx) & 31);    \
+    if (value)                                          \
+        (ptr)->data[(idx) >> 5] |= _bitmask;            \
+    else                                                \
+        (ptr)->data[(idx) >> 5] &= ~_bitmask;           \
+} while(0)
+
+#else // 64bit version of bitmaps
+
+typedef struct bitmapX {
+    uint32_t bits;
+    uint64_t data[];
+} BITMAPX;
+
+typedef struct bitmap256 {
+    uint32_t bits;
+    uint64_t data[256 / 64];
+} BITMAP256;
+
+typedef struct bitmap1024 {
+    uint32_t bits;
+    uint64_t data[1024 / 64];
+} BITMAP1024;
+
+static inline BITMAPX *bitmapX_create(uint32_t bits) {
+    BITMAPX *bmp = (BITMAPX *)callocz(1, sizeof(BITMAPX) + sizeof(uint64_t) * ((bits + 63) / 64));
+    bmp->bits = bits;
+    return bmp;
+}
+
+#define bitmapX_get_bit(ptr, idx) ((ptr)->data[(idx) >> 6] & (1ULL << ((idx) & 63)))
+#define bitmapX_set_bit(ptr, idx, value) do {           \
+    register uint64_t _bitmask = 1ULL << ((idx) & 63);  \
+    if (value)                                          \
+        (ptr)->data[(idx) >> 6] |= _bitmask;            \
+    else                                                \
+        (ptr)->data[(idx) >> 6] &= ~_bitmask;           \
+} while(0)
+
+#endif // 64bit version of bitmaps
+
+#define BITMAPX_INITIALIZER(wanted_bits) { .bits = (wanted_bits), .data = {0} }
+#define BITMAP256_INITIALIZER (BITMAP256)BITMAPX_INITIALIZER(256)
+#define BITMAP1024_INITIALIZER (BITMAP1024)BITMAPX_INITIALIZER(1024)
+#define bitmap256_get_bit(ptr, idx) bitmapX_get_bit((BITMAPX *)ptr, idx)
+#define bitmap256_set_bit(ptr, idx, value) bitmapX_set_bit((BITMAPX *)ptr, idx, value)
+#define bitmap1024_get_bit(ptr, idx) bitmapX_get_bit((BITMAPX *)ptr, idx)
+#define bitmap1024_set_bit(ptr, idx, value) bitmapX_set_bit((BITMAPX *)ptr, idx, value)
+
+#define COMPRESSION_MAX_CHUNK 0x4000
+#define COMPRESSION_MAX_OVERHEAD 128
+#define COMPRESSION_MAX_MSG_SIZE (COMPRESSION_MAX_CHUNK - COMPRESSION_MAX_OVERHEAD - 1)
+#define PLUGINSD_LINE_MAX (COMPRESSION_MAX_MSG_SIZE - 768)
+int pluginsd_isspace(char c);
+int config_isspace(char c);
+int group_by_label_isspace(char c);
+
+extern bool isspace_map_pluginsd[256];
+extern bool isspace_map_config[256];
+extern bool isspace_map_group_by_label[256];
+
+static inline size_t quoted_strings_splitter(char *str, char **words, size_t max_words, bool *isspace_map) {
+    char *s = str, quote = 0;
+    size_t i = 0;
+
+    // skip all white space
+    while (unlikely(isspace_map[(uint8_t)*s]))
+        s++;
+
+    if(unlikely(!*s)) {
+        words[i] = NULL;
+        return 0;
+    }
+
+    // check for quote
+    if (unlikely(*s == '\'' || *s == '"')) {
+        quote = *s; // remember the quote
+        s++;        // skip the quote
+    }
+
+    // store the first word
+    words[i++] = s;
+
+    // while we have something
+    while (likely(*s)) {
+        // if it is an escape
+        if (unlikely(*s == '\\' && s[1])) {
+            s += 2;
+            continue;
+        }
+
+        // if it is a quote
+        else if (unlikely(*s == quote)) {
+            quote = 0;
+            *s = ' ';
+            continue;
+        }
+
+        // if it is a space
+        else if (unlikely(quote == 0 && isspace_map[(uint8_t)*s])) {
+            // terminate the word
+            *s++ = '\0';
+
+            // skip all white space
+            while (likely(isspace_map[(uint8_t)*s]))
+                s++;
+
+            // check for a quote
+            if (unlikely(*s == '\'' || *s == '"')) {
+                quote = *s; // remember the quote
+                s++;        // skip the quote
+            }
+
+            // if we reached the end, stop
+            if (unlikely(!*s))
+                break;
+
+            // store the next word
+            if (likely(i < max_words))
+                words[i++] = s;
+            else
+                break;
+        }
+
+        // anything else
+        else
+            s++;
+    }
+
+    if (likely(i < max_words))
+        words[i] = NULL;
+
+    return i;
+}
+
+#define quoted_strings_splitter_query_group_by_label(str, words, max_words) \
+        quoted_strings_splitter(str, words, max_words, isspace_map_group_by_label)
+
+#define quoted_strings_splitter_config(str, words, max_words) \
+        quoted_strings_splitter(str, words, max_words, isspace_map_config)
+
+#define quoted_strings_splitter_pluginsd(str, words, max_words) \
+        quoted_strings_splitter(str, words, max_words, isspace_map_pluginsd)
+
+static inline char *get_word(char **words, size_t num_words, size_t index) {
+    if (unlikely(index >= num_words))
+        return NULL;
+
+    return words[index];
+}
+
+bool run_command_and_copy_output_to_stdout(const char *command, int max_line_length);
+
+typedef enum {
+    OPEN_FD_ACTION_CLOSE,
+    OPEN_FD_ACTION_FD_CLOEXEC
+} OPEN_FD_ACTION;
+typedef enum {
+    OPEN_FD_EXCLUDE_STDIN   = 0x01,
+    OPEN_FD_EXCLUDE_STDOUT  = 0x02,
+    OPEN_FD_EXCLUDE_STDERR  = 0x04
+} OPEN_FD_EXCLUDE;
+void for_each_open_fd(OPEN_FD_ACTION action, OPEN_FD_EXCLUDE excluded_fds);
+
+void netdata_cleanup_and_exit(int ret) NORETURN;
+void send_statistics(const char *action, const char *action_result, const char *action_data);
 extern char *netdata_configured_host_prefix;
+
+#define XXH_INLINE_ALL
+#include "xxhash.h"
+
+#include "libjudy/src/Judy.h"
+#include "july/july.h"
 #include "os.h"
-#include "storage_number/storage_number.h"
 #include "threads/threads.h"
 #include "buffer/buffer.h"
 #include "locks/locks.h"
@@ -422,11 +835,17 @@ extern char *netdata_configured_host_prefix;
 #include "json/json.h"
 #include "health/health.h"
 #include "string/utf8.h"
-#include "arrayalloc/arrayalloc.h"
+#include "libnetdata/aral/aral.h"
 #include "onewayalloc/onewayalloc.h"
 #include "worker_utilization/worker_utilization.h"
+#include "yaml.h"
+#include "http/http_defs.h"
+#include "gorilla/gorilla.h"
+#include "facets/facets.h"
+#include "dyn_conf/dyn_conf.h"
+#include "functions_evloop/functions_evloop.h"
 
-// BEWARE: Outside of the C code this also exists in alarm-notify.sh
+// BEWARE: this exists in alarm-notify.sh
 #define DEFAULT_CLOUD_BASE_URL "https://app.netdata.cloud"
 
 #define RRD_STORAGE_TIERS 5
@@ -440,6 +859,141 @@ static inline size_t struct_natural_alignment(size_t size) {
 
     return size;
 }
+
+#ifdef NETDATA_TRACE_ALLOCATIONS
+struct malloc_trace {
+    avl_t avl;
+
+    const char *function;
+    const char *file;
+    size_t line;
+
+    size_t malloc_calls;
+    size_t calloc_calls;
+    size_t realloc_calls;
+    size_t strdup_calls;
+    size_t free_calls;
+
+    size_t mmap_calls;
+    size_t munmap_calls;
+
+    size_t allocations;
+    size_t bytes;
+
+    struct rrddim *rd_bytes;
+    struct rrddim *rd_allocations;
+    struct rrddim *rd_avg_alloc;
+    struct rrddim *rd_ops;
+};
+#endif // NETDATA_TRACE_ALLOCATIONS
+
+static inline PPvoid_t JudyLFirstThenNext(Pcvoid_t PArray, Word_t * PIndex, bool *first) {
+    if(unlikely(*first)) {
+        *first = false;
+        return JudyLFirst(PArray, PIndex, PJE0);
+    }
+
+    return JudyLNext(PArray, PIndex, PJE0);
+}
+
+static inline PPvoid_t JudyLLastThenPrev(Pcvoid_t PArray, Word_t * PIndex, bool *first) {
+    if(unlikely(*first)) {
+        *first = false;
+        return JudyLLast(PArray, PIndex, PJE0);
+    }
+
+    return JudyLPrev(PArray, PIndex, PJE0);
+}
+
+typedef enum {
+    TIMING_STEP_INTERNAL = 0,
+
+    TIMING_STEP_BEGIN2_PREPARE,
+    TIMING_STEP_BEGIN2_FIND_CHART,
+    TIMING_STEP_BEGIN2_PARSE,
+    TIMING_STEP_BEGIN2_ML,
+    TIMING_STEP_BEGIN2_PROPAGATE,
+    TIMING_STEP_BEGIN2_STORE,
+
+    TIMING_STEP_SET2_PREPARE,
+    TIMING_STEP_SET2_LOOKUP_DIMENSION,
+    TIMING_STEP_SET2_PARSE,
+    TIMING_STEP_SET2_ML,
+    TIMING_STEP_SET2_PROPAGATE,
+    TIMING_STEP_RRDSET_STORE_METRIC,
+    TIMING_STEP_DBENGINE_FIRST_CHECK,
+    TIMING_STEP_DBENGINE_CHECK_DATA,
+    TIMING_STEP_DBENGINE_PACK,
+    TIMING_STEP_DBENGINE_PAGE_FIN,
+    TIMING_STEP_DBENGINE_MRG_UPDATE,
+    TIMING_STEP_DBENGINE_PAGE_ALLOC,
+    TIMING_STEP_DBENGINE_CREATE_NEW_PAGE,
+    TIMING_STEP_DBENGINE_FLUSH_PAGE,
+    TIMING_STEP_SET2_STORE,
+
+    TIMING_STEP_END2_PREPARE,
+    TIMING_STEP_END2_PUSH_V1,
+    TIMING_STEP_END2_ML,
+    TIMING_STEP_END2_RRDSET,
+    TIMING_STEP_END2_PROPAGATE,
+    TIMING_STEP_END2_STORE,
+
+    TIMING_STEP_FREEIPMI_CTX_CREATE,
+    TIMING_STEP_FREEIPMI_DSR_CACHE_DIR,
+    TIMING_STEP_FREEIPMI_SENSOR_CONFIG_FILE,
+    TIMING_STEP_FREEIPMI_SENSOR_READINGS_BY_X,
+    TIMING_STEP_FREEIPMI_READ_record_id,
+    TIMING_STEP_FREEIPMI_READ_sensor_number,
+    TIMING_STEP_FREEIPMI_READ_sensor_type,
+    TIMING_STEP_FREEIPMI_READ_sensor_name,
+    TIMING_STEP_FREEIPMI_READ_sensor_state,
+    TIMING_STEP_FREEIPMI_READ_sensor_units,
+    TIMING_STEP_FREEIPMI_READ_sensor_bitmask_type,
+    TIMING_STEP_FREEIPMI_READ_sensor_bitmask,
+    TIMING_STEP_FREEIPMI_READ_sensor_bitmask_strings,
+    TIMING_STEP_FREEIPMI_READ_sensor_reading_type,
+    TIMING_STEP_FREEIPMI_READ_sensor_reading,
+    TIMING_STEP_FREEIPMI_READ_event_reading_type_code,
+    TIMING_STEP_FREEIPMI_READ_record_type,
+    TIMING_STEP_FREEIPMI_READ_record_type_class,
+    TIMING_STEP_FREEIPMI_READ_sel_state,
+    TIMING_STEP_FREEIPMI_READ_event_direction,
+    TIMING_STEP_FREEIPMI_READ_event_type_code,
+    TIMING_STEP_FREEIPMI_READ_event_offset_type,
+    TIMING_STEP_FREEIPMI_READ_event_offset,
+    TIMING_STEP_FREEIPMI_READ_event_offset_string,
+    TIMING_STEP_FREEIPMI_READ_manufacturer_id,
+
+    // terminator
+    TIMING_STEP_MAX,
+} TIMING_STEP;
+
+typedef enum {
+    TIMING_ACTION_INIT,
+    TIMING_ACTION_STEP,
+    TIMING_ACTION_FINISH,
+} TIMING_ACTION;
+
+#ifdef NETDATA_TIMING_REPORT
+#define timing_init() timing_action(TIMING_ACTION_INIT, TIMING_STEP_INTERNAL)
+#define timing_step(step) timing_action(TIMING_ACTION_STEP, step)
+#define timing_report() timing_action(TIMING_ACTION_FINISH, TIMING_STEP_INTERNAL)
+#else
+#define timing_init() debug_dummy()
+#define timing_step(step) debug_dummy()
+#define timing_report() debug_dummy()
+#endif
+void timing_action(TIMING_ACTION action, TIMING_STEP step);
+
+int hash256_string(const unsigned char *string, size_t size, char *hash);
+
+extern bool unittest_running;
+#define API_RELATIVE_TIME_MAX (3 * 365 * 86400)
+
+bool rrdr_relative_window_to_absolute(time_t *after, time_t *before, time_t now);
+bool rrdr_relative_window_to_absolute_query(time_t *after, time_t *before, time_t *now_ptr, bool unittest_running);
+
+int netdata_base64_decode(const char *encoded, char *decoded, size_t decoded_size);
 
 # ifdef __cplusplus
 }

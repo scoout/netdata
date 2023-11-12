@@ -5,13 +5,34 @@
 #define PLUGIN_PROC_MODULE_NETDEV_NAME "/proc/net/dev"
 #define CONFIG_SECTION_PLUGIN_PROC_NETDEV "plugin:" PLUGIN_PROC_CONFIG_NAME ":" PLUGIN_PROC_MODULE_NETDEV_NAME
 
+#define RRDFUNCTIONS_NETDEV_HELP "View network interface statistics"
+
 #define STATE_LENGTH_MAX 32
+
+#define READ_RETRY_PERIOD 60 // seconds
+
+void cgroup_netdev_reset_all(void);
+void cgroup_netdev_release(const DICTIONARY_ITEM *link);
+const void *cgroup_netdev_dup(const DICTIONARY_ITEM *link);
+void cgroup_netdev_add_bandwidth(const DICTIONARY_ITEM *link, NETDATA_DOUBLE received, NETDATA_DOUBLE sent);
 
 enum {
     NETDEV_DUPLEX_UNKNOWN,
     NETDEV_DUPLEX_HALF,
     NETDEV_DUPLEX_FULL
 };
+
+static const char *get_duplex_string(int duplex)
+{
+    switch (duplex) {
+        case NETDEV_DUPLEX_FULL:
+            return "full";
+        case NETDEV_DUPLEX_HALF:
+            return "half";
+        default:
+            return "unknown";
+    }
+}
 
 enum {
     NETDEV_OPERSTATE_UNKNOWN,
@@ -42,6 +63,26 @@ static inline int get_operstate(char *operstate)
     return NETDEV_OPERSTATE_UNKNOWN;
 }
 
+static const char *get_operstate_string(int operstate)
+{
+    switch (operstate) {
+        case NETDEV_OPERSTATE_UP:
+            return "up";
+        case NETDEV_OPERSTATE_DOWN:
+            return "down";
+        case NETDEV_OPERSTATE_NOTPRESENT:
+            return "notpresent";
+        case NETDEV_OPERSTATE_LOWERLAYERDOWN:
+            return "lowerlayerdown";
+        case NETDEV_OPERSTATE_TESTING:
+            return "testing";
+        case NETDEV_OPERSTATE_DORMANT:
+            return "dormant";
+        default:
+            return "unknown";
+    }
+}
+
 // ----------------------------------------------------------------------------
 // netdev list
 
@@ -55,6 +96,19 @@ static struct netdev {
     int configured;
     int enabled;
     int updated;
+
+    bool function_ready;
+
+    time_t discover_time;
+    
+    int carrier_file_exists;
+    time_t carrier_file_lost_time;
+
+    int duplex_file_exists;
+    time_t duplex_file_lost_time;
+
+    int speed_file_exists;
+    time_t speed_file_lost_time;
 
     int do_bandwidth;
     int do_packets;
@@ -110,7 +164,7 @@ static struct netdev {
 
     const char *chart_family;
 
-    DICTIONARY *chart_labels;
+    RRDLABELS *chart_labels;
 
     int flipped;
     unsigned long priority;
@@ -195,6 +249,8 @@ static struct netdev {
     char *filename_carrier;
     char *filename_mtu;
 
+    const DICTIONARY_ITEM *cgroup_netdev_link;
+
     struct netdev *next;
 } *netdev_root = NULL, *netdev_last_used = NULL;
 
@@ -203,18 +259,18 @@ static size_t netdev_added = 0, netdev_found = 0;
 // ----------------------------------------------------------------------------
 
 static void netdev_charts_release(struct netdev *d) {
-    if(d->st_bandwidth)  rrdset_is_obsolete(d->st_bandwidth);
-    if(d->st_packets)    rrdset_is_obsolete(d->st_packets);
-    if(d->st_errors)     rrdset_is_obsolete(d->st_errors);
-    if(d->st_drops)      rrdset_is_obsolete(d->st_drops);
-    if(d->st_fifo)       rrdset_is_obsolete(d->st_fifo);
-    if(d->st_compressed) rrdset_is_obsolete(d->st_compressed);
-    if(d->st_events)     rrdset_is_obsolete(d->st_events);
-    if(d->st_speed)      rrdset_is_obsolete(d->st_speed);
-    if(d->st_duplex)     rrdset_is_obsolete(d->st_duplex);
-    if(d->st_operstate)  rrdset_is_obsolete(d->st_operstate);
-    if(d->st_carrier)    rrdset_is_obsolete(d->st_carrier);
-    if(d->st_mtu)        rrdset_is_obsolete(d->st_mtu);
+    if(d->st_bandwidth) rrdset_is_obsolete___safe_from_collector_thread(d->st_bandwidth);
+    if(d->st_packets) rrdset_is_obsolete___safe_from_collector_thread(d->st_packets);
+    if(d->st_errors) rrdset_is_obsolete___safe_from_collector_thread(d->st_errors);
+    if(d->st_drops) rrdset_is_obsolete___safe_from_collector_thread(d->st_drops);
+    if(d->st_fifo) rrdset_is_obsolete___safe_from_collector_thread(d->st_fifo);
+    if(d->st_compressed) rrdset_is_obsolete___safe_from_collector_thread(d->st_compressed);
+    if(d->st_events) rrdset_is_obsolete___safe_from_collector_thread(d->st_events);
+    if(d->st_speed) rrdset_is_obsolete___safe_from_collector_thread(d->st_speed);
+    if(d->st_duplex) rrdset_is_obsolete___safe_from_collector_thread(d->st_duplex);
+    if(d->st_operstate) rrdset_is_obsolete___safe_from_collector_thread(d->st_operstate);
+    if(d->st_carrier) rrdset_is_obsolete___safe_from_collector_thread(d->st_carrier);
+    if(d->st_mtu) rrdset_is_obsolete___safe_from_collector_thread(d->st_mtu);
 
     d->st_bandwidth   = NULL;
     d->st_compressed  = NULL;
@@ -313,6 +369,7 @@ static void netdev_free(struct netdev *d) {
     netdev_charts_release(d);
     netdev_free_chart_strings(d);
     rrdlabels_destroy(d->chart_labels);
+    cgroup_netdev_release(d->cgroup_netdev_link);
 
     freez((void *)d->name);
     freez((void *)d->filename_speed);
@@ -335,15 +392,18 @@ static struct netdev_rename {
     const char *container_name;
     const char *ctx_prefix;
 
-    DICTIONARY *chart_labels;
+    RRDLABELS *chart_labels;
 
     int processed;
+
+    const DICTIONARY_ITEM *cgroup_netdev_link;
 
     struct netdev_rename *next;
 } *netdev_rename_root = NULL;
 
 static int netdev_pending_renames = 0;
 static netdata_mutex_t netdev_rename_mutex = NETDATA_MUTEX_INITIALIZER;
+static netdata_mutex_t netdev_dev_mutex = NETDATA_MUTEX_INITIALIZER;
 
 static struct netdev_rename *netdev_rename_find(const char *host_device, uint32_t hash) {
     struct netdev_rename *r;
@@ -360,8 +420,9 @@ void netdev_rename_device_add(
     const char *host_device,
     const char *container_device,
     const char *container_name,
-    DICTIONARY *labels,
-    const char *ctx_prefix)
+    RRDLABELS *labels,
+    const char *ctx_prefix,
+    const DICTIONARY_ITEM *cgroup_netdev_link)
 {
     netdata_mutex_lock(&netdev_rename_mutex);
 
@@ -378,9 +439,11 @@ void netdev_rename_device_add(
         r->hash             = hash;
         r->next             = netdev_rename_root;
         r->processed        = 0;
+        r->cgroup_netdev_link = cgroup_netdev_link;
+
         netdev_rename_root  = r;
         netdev_pending_renames++;
-        info("CGROUP: registered network interface rename for '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
+        collector_info("CGROUP: registered network interface rename for '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
     }
     else {
         if(strcmp(r->container_device, container_device) != 0 || strcmp(r->container_name, container_name) != 0) {
@@ -393,8 +456,10 @@ void netdev_rename_device_add(
             rrdlabels_migrate_to_these(r->chart_labels, labels);
             
             r->processed        = 0;
+            r->cgroup_netdev_link = cgroup_netdev_link;
+
             netdev_pending_renames++;
-            info("CGROUP: altered network interface rename for '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
+            collector_info("CGROUP: altered network interface rename for '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
         }
     }
 
@@ -418,13 +483,14 @@ void netdev_rename_device_del(const char *host_device) {
             if(!r->processed)
                 netdev_pending_renames--;
 
-            info("CGROUP: unregistered network interface rename for '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
+            collector_info("CGROUP: unregistered network interface rename for '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
 
             freez((void *) r->host_device);
             freez((void *) r->container_name);
             freez((void *) r->container_device);
             freez((void *) r->ctx_prefix);
             rrdlabels_destroy(r->chart_labels);
+            cgroup_netdev_release(r->cgroup_netdev_link);
             freez((void *) r);
             break;
         }
@@ -434,10 +500,11 @@ void netdev_rename_device_del(const char *host_device) {
 }
 
 static inline void netdev_rename_cgroup(struct netdev *d, struct netdev_rename *r) {
-    info("CGROUP: renaming network interface '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
+    collector_info("CGROUP: renaming network interface '%s' as '%s' under '%s'", r->host_device, r->container_device, r->container_name);
 
     netdev_charts_release(d);
     netdev_free_chart_strings(d);
+    d->cgroup_netdev_link = cgroup_netdev_dup(r->cgroup_netdev_link);
 
     char buffer[RRD_ID_LENGTH_MAX + 1];
 
@@ -505,10 +572,10 @@ static inline void netdev_rename_cgroup(struct netdev *d, struct netdev_rename *
     snprintfz(buffer, RRD_ID_LENGTH_MAX, "%scgroup.net_mtu", r->ctx_prefix);
     d->chart_ctx_net_mtu        = strdupz(buffer);
 
-    snprintfz(buffer, RRD_ID_LENGTH_MAX, "net %s", r->container_device);
-    d->chart_family = strdupz(buffer);
+    d->chart_family = strdupz("net");
 
     rrdlabels_copy(d->chart_labels, r->chart_labels);
+    rrdlabels_add(d->chart_labels, "container_device", r->container_device, RRDLABEL_SRC_AUTO);
 
     d->priority = NETDATA_CHART_PRIO_CGROUP_NET_IFACE;
     d->flipped = 1;
@@ -519,6 +586,7 @@ static inline void netdev_rename(struct netdev *d) {
     if(unlikely(r && !r->processed)) {
         netdev_rename_cgroup(d, r);
         r->processed = 1;
+        d->discover_time = 0;
         netdev_pending_renames--;
     }
 }
@@ -541,6 +609,319 @@ static inline void netdev_rename_all_lock(void) {
 }
 
 // ----------------------------------------------------------------------------
+
+int netdev_function_net_interfaces(BUFFER *wb, int timeout __maybe_unused, const char *function __maybe_unused,
+        void *collector_data __maybe_unused,
+        rrd_function_result_callback_t result_cb, void *result_cb_data,
+        rrd_function_is_cancelled_cb_t is_cancelled_cb, void *is_cancelled_cb_data,
+        rrd_function_register_canceller_cb_t register_canceller_cb __maybe_unused,
+        void *register_canceller_cb_data __maybe_unused) {
+
+    buffer_flush(wb);
+    wb->content_type = CT_APPLICATION_JSON;
+    buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
+
+    buffer_json_member_add_string(wb, "hostname", rrdhost_hostname(localhost));
+    buffer_json_member_add_uint64(wb, "status", HTTP_RESP_OK);
+    buffer_json_member_add_string(wb, "type", "table");
+    buffer_json_member_add_time_t(wb, "update_every", 1);
+    buffer_json_member_add_string(wb, "help", RRDFUNCTIONS_NETDEV_HELP);
+    buffer_json_member_add_array(wb, "data");
+
+    double max_traffic_rx = 0.0;
+    double max_traffic_tx = 0.0;
+    double max_traffic = 0.0;
+    double max_packets_rx = 0.0;
+    double max_packets_tx = 0.0;
+    double max_mcast_rx = 0.0;
+    double max_drops_rx = 0.0;
+    double max_drops_tx = 0.0;
+
+    netdata_mutex_lock(&netdev_dev_mutex);
+
+    RRDDIM *rd = NULL;
+
+    for (struct netdev *d = netdev_root; d != netdev_last_used; d = d->next) {
+        if (unlikely(!d->function_ready))
+            continue;
+
+        buffer_json_add_array_item_array(wb);
+
+        buffer_json_add_array_item_string(wb, d->name);
+
+        buffer_json_add_array_item_string(wb, d->virtual ? "virtual" : "physical");
+        buffer_json_add_array_item_string(wb, d->flipped ? "cgroup" : "host");
+        buffer_json_add_array_item_string(wb, d->carrier == 1 ? "up" : "down");
+        buffer_json_add_array_item_string(wb, get_operstate_string(d->operstate));
+        buffer_json_add_array_item_string(wb, get_duplex_string(d->duplex));
+        buffer_json_add_array_item_double(wb, d->speed > 0 ? d->speed : NAN);
+        buffer_json_add_array_item_double(wb, d->mtu > 0 ? d->mtu : NAN);
+
+        rd = d->flipped ? d->rd_tbytes : d->rd_rbytes;
+        double traffic_rx = rrddim_get_last_stored_value(rd, &max_traffic_rx, 1000.0);
+        rd = d->flipped ? d->rd_rbytes : d->rd_tbytes;
+        double traffic_tx = rrddim_get_last_stored_value(rd, &max_traffic_tx, 1000.0);
+
+        rd = d->flipped ? d->rd_tpackets : d->rd_rpackets;
+        double packets_rx = rrddim_get_last_stored_value(rd, &max_packets_rx, 1000.0);
+        rd = d->flipped ? d->rd_rpackets : d->rd_tpackets;
+        double packets_tx = rrddim_get_last_stored_value(rd, &max_packets_tx, 1000.0);
+
+        double mcast_rx = rrddim_get_last_stored_value(d->rd_rmulticast, &max_mcast_rx, 1000.0);
+
+        rd = d->flipped ? d->rd_tdrops : d->rd_rdrops;
+        double drops_rx = rrddim_get_last_stored_value(rd, &max_drops_rx, 1.0);
+        rd = d->flipped ? d->rd_rdrops : d->rd_tdrops;
+        double drops_tx = rrddim_get_last_stored_value(rd, &max_drops_tx, 1.0);
+
+        // FIXME: "traffic" (total) is needed only for default_sorting
+        // can be removed when default_sorting will accept multiple columns (sum)
+        double traffic = NAN;
+        if (!isnan(traffic_rx) && !isnan(traffic_tx)) {
+            traffic = traffic_rx + traffic_tx;
+            max_traffic = MAX(max_traffic, traffic);
+        }
+
+
+        buffer_json_add_array_item_double(wb, traffic_rx);
+        buffer_json_add_array_item_double(wb, traffic_tx);
+        buffer_json_add_array_item_double(wb, traffic);
+        buffer_json_add_array_item_double(wb, packets_rx);
+        buffer_json_add_array_item_double(wb, packets_tx);
+        buffer_json_add_array_item_double(wb, mcast_rx);
+        buffer_json_add_array_item_double(wb, drops_rx);
+        buffer_json_add_array_item_double(wb, drops_tx);
+
+        buffer_json_add_array_item_object(wb);
+        {
+            buffer_json_member_add_string(wb, "severity", drops_rx + drops_tx > 0 ? "warning" : "normal");
+        }
+        buffer_json_object_close(wb);
+
+        buffer_json_array_close(wb);
+    }
+
+    netdata_mutex_unlock(&netdev_dev_mutex);
+
+    buffer_json_array_close(wb); // data
+    buffer_json_member_add_object(wb, "columns");
+    {
+        size_t field_id = 0;
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Interface", "Network Interface Name",
+                RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_VISIBLE | RRDF_FIELD_OPTS_UNIQUE_KEY | RRDF_FIELD_OPTS_STICKY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Type", "Network Interface Type",
+                RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_VISIBLE | RRDF_FIELD_OPTS_UNIQUE_KEY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "UsedBy", "Indicates whether the network interface is used by a cgroup or by the host system",
+                RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_VISIBLE | RRDF_FIELD_OPTS_UNIQUE_KEY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "PhState", "Current Physical State",
+                RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_VISIBLE | RRDF_FIELD_OPTS_UNIQUE_KEY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "OpState", "Current Operational State",
+                RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_UNIQUE_KEY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Duplex", "Current Duplex Mode",
+                RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_UNIQUE_KEY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Speed", "Current Link Speed",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NUMBER,
+                0, "Mbit", NAN, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_UNIQUE_KEY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "MTU", "Maximum Transmission Unit",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NUMBER,
+                0, "Octets", NAN, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                RRDF_FIELD_OPTS_UNIQUE_KEY,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "In", "Traffic Received",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Mbit", max_traffic_rx, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_VISIBLE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Out", "Traffic Sent",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Mbit", max_traffic_tx, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_VISIBLE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Total", "Traffic Received and Sent",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Mbit", max_traffic, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_NONE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "PktsIn", "Received Packets",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Kpps", max_packets_rx, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_VISIBLE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "PktsOut", "Sent Packets",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Kpps", max_packets_tx, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_VISIBLE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "McastIn", "Multicast Received Packets",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Kpps", max_mcast_rx, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_NONE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "DropsIn", "Dropped Inbound Packets",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Drops", max_drops_rx, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_VISIBLE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "DropsOut", "Dropped Outbound Packets",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                2, "Drops", max_drops_tx, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_VISIBLE,
+                NULL);
+
+        buffer_rrdf_table_add_field(
+                wb, field_id++,
+                "rowOptions", "rowOptions",
+                RRDF_FIELD_TYPE_NONE,
+                RRDR_FIELD_VISUAL_ROW_OPTIONS,
+                RRDF_FIELD_TRANSFORM_NONE, 0, NULL, NAN,
+                RRDF_FIELD_SORT_FIXED,
+                NULL,
+                RRDF_FIELD_SUMMARY_COUNT,
+                RRDF_FIELD_FILTER_NONE,
+                RRDF_FIELD_OPTS_DUMMY,
+                NULL);
+    }
+
+    buffer_json_object_close(wb); // columns
+    buffer_json_member_add_string(wb, "default_sort_column", "Total");
+
+    buffer_json_member_add_object(wb, "charts");
+    {
+        buffer_json_member_add_object(wb, "Traffic");
+        {
+            buffer_json_member_add_string(wb, "name", "Traffic");
+            buffer_json_member_add_string(wb, "type", "stacked-bar");
+            buffer_json_member_add_array(wb, "columns");
+            {
+                buffer_json_add_array_item_string(wb, "In");
+                buffer_json_add_array_item_string(wb, "Out");
+            }
+            buffer_json_array_close(wb);
+        }
+        buffer_json_object_close(wb);
+
+        buffer_json_member_add_object(wb, "Packets");
+        {
+            buffer_json_member_add_string(wb, "name", "Packets");
+            buffer_json_member_add_string(wb, "type", "stacked-bar");
+            buffer_json_member_add_array(wb, "columns");
+            {
+                buffer_json_add_array_item_string(wb, "PktsIn");
+                buffer_json_add_array_item_string(wb, "PktsOut");
+            }
+            buffer_json_array_close(wb);
+        }
+        buffer_json_object_close(wb);
+    }
+    buffer_json_object_close(wb); // charts
+
+    buffer_json_member_add_array(wb, "default_charts");
+    {
+        buffer_json_add_array_item_array(wb);
+        buffer_json_add_array_item_string(wb, "Traffic");
+        buffer_json_add_array_item_string(wb, "Interface");
+        buffer_json_array_close(wb);
+
+        buffer_json_add_array_item_array(wb);
+        buffer_json_add_array_item_string(wb, "Traffic");
+        buffer_json_add_array_item_string(wb, "Type");
+        buffer_json_array_close(wb);
+    }
+    buffer_json_array_close(wb);
+
+    buffer_json_member_add_object(wb, "group_by");
+    {
+        buffer_json_member_add_object(wb, "Type");
+        {
+            buffer_json_member_add_string(wb, "name", "Type");
+            buffer_json_member_add_array(wb, "columns");
+            {
+                buffer_json_add_array_item_string(wb, "Type");
+            }
+            buffer_json_array_close(wb);
+        }
+        buffer_json_object_close(wb);
+
+        buffer_json_member_add_object(wb, "UsedBy");
+        {
+            buffer_json_member_add_string(wb, "name", "UsedBy");
+            buffer_json_member_add_array(wb, "columns");
+            {
+                buffer_json_add_array_item_string(wb, "UsedBy");
+            }
+            buffer_json_array_close(wb);
+        }
+        buffer_json_object_close(wb);
+    }
+    buffer_json_object_close(wb); // group_by
+
+    buffer_json_member_add_time_t(wb, "expires", now_realtime_sec() + 1);
+    buffer_json_finalize(wb);
+
+    int response = HTTP_RESP_OK;
+    if(is_cancelled_cb && is_cancelled_cb(is_cancelled_cb_data)) {
+        buffer_flush(wb);
+        response = HTTP_RESP_CLIENT_CLOSED_REQUEST;
+    }
+
+    if(result_cb)
+        result_cb(wb, response, result_cb_data);
+
+    return response;
+}
+
 // netdev data collection
 
 static void netdev_cleanup() {
@@ -550,7 +931,7 @@ static void netdev_cleanup() {
     struct netdev *d = netdev_root, *last = NULL;
     while(d) {
         if(unlikely(!d->updated)) {
-            // info("Removing network device '%s', linked after '%s'", d->name, last?last->name:"ROOT");
+            // collector_info("Removing network device '%s', linked after '%s'", d->name, last?last->name:"ROOT");
 
             if(netdev_last_used == d)
                 netdev_last_used = last;
@@ -602,6 +983,7 @@ static struct netdev *get_netdev(const char *name) {
     d->hash = simple_hash(d->name);
     d->len = strlen(d->name);
     d->chart_labels = rrdlabels_create();
+    d->function_ready = false;
 
     d->chart_type_net_bytes      = strdupz("net");
     d->chart_type_net_compressed = strdupz("net_compressed");
@@ -661,6 +1043,8 @@ static struct netdev *get_netdev(const char *name) {
     return d;
 }
 
+#define NETDEV_VIRTUAL_COLLECT_DELAY 15 // 1 full run of the cgroups discovery thread (10 secs by default)
+
 int do_proc_net_dev(int update_every, usec_t dt) {
     (void)dt;
     static SIMPLE_PATTERN *disabled_list = NULL;
@@ -715,7 +1099,9 @@ int do_proc_net_dev(int update_every, usec_t dt) {
         do_carrier      = config_get_boolean_ondemand(CONFIG_SECTION_PLUGIN_PROC_NETDEV, "carrier for all interfaces", CONFIG_BOOLEAN_AUTO);
         do_mtu          = config_get_boolean_ondemand(CONFIG_SECTION_PLUGIN_PROC_NETDEV, "mtu for all interfaces", CONFIG_BOOLEAN_AUTO);
 
-        disabled_list = simple_pattern_create(config_get(CONFIG_SECTION_PLUGIN_PROC_NETDEV, "disable by default interfaces matching", "lo fireqos* *-ifb fwpr* fwbr* fwln*"), NULL, SIMPLE_PATTERN_EXACT);
+        disabled_list = simple_pattern_create(
+                config_get(CONFIG_SECTION_PLUGIN_PROC_NETDEV, "disable by default interfaces matching",
+                           "lo fireqos* *-ifb fwpr* fwbr* fwln*"), NULL, SIMPLE_PATTERN_EXACT, true);
     }
 
     if(unlikely(!ff)) {
@@ -735,6 +1121,8 @@ int do_proc_net_dev(int update_every, usec_t dt) {
     kernel_uint_t system_rbytes = 0;
     kernel_uint_t system_tbytes = 0;
 
+    time_t now = now_realtime_sec();
+
     size_t lines = procfile_lines(ff), l;
     for(l = 2; l < lines ;l++) {
         // require 17 words on each line
@@ -753,6 +1141,7 @@ int do_proc_net_dev(int update_every, usec_t dt) {
 
             // remember we configured it
             d->configured = 1;
+            d->discover_time = now;
 
             d->enabled = enable_new_interfaces;
 
@@ -760,17 +1149,21 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                 d->enabled = !simple_pattern_matches(disabled_list, d->name);
 
             char buffer[FILENAME_MAX + 1];
-
             snprintfz(buffer, FILENAME_MAX, path_to_sys_devices_virtual_net, d->name);
-            if (likely(access(buffer, R_OK) == 0)) {
-                d->virtual = 1;
-                rrdlabels_add(d->chart_labels, "interface_type", "virtual", RRDLABEL_SRC_AUTO|RRDLABEL_FLAG_PERMANENT);
-            }
-            else {
+
+            d->virtual = likely(access(buffer, R_OK) == 0) ? 1 : 0;
+
+            // At least on Proxmox inside LXC: eth0 is virtual.
+            // Virtual interfaces are not taken into account in system.net calculations
+            if (inside_lxc_container && d->virtual && strncmp(d->name, "eth", 3) == 0)
                 d->virtual = 0;
-                rrdlabels_add(d->chart_labels, "interface_type", "real", RRDLABEL_SRC_AUTO|RRDLABEL_FLAG_PERMANENT);
-            }
-            rrdlabels_add(d->chart_labels, "device", name, RRDLABEL_SRC_AUTO|RRDLABEL_FLAG_PERMANENT);
+
+            if (d->virtual)
+                rrdlabels_add(d->chart_labels, "interface_type", "virtual", RRDLABEL_SRC_AUTO);
+            else
+                rrdlabels_add(d->chart_labels, "interface_type", "real", RRDLABEL_SRC_AUTO);
+
+            rrdlabels_add(d->chart_labels, "device", name, RRDLABEL_SRC_AUTO);
 
             if(likely(!d->virtual)) {
                 // set the filename to get the interface speed
@@ -813,6 +1206,14 @@ int do_proc_net_dev(int update_every, usec_t dt) {
 
         if(unlikely(!d->enabled))
             continue;
+
+        // See https://github.com/netdata/netdata/issues/15206
+        // This is necessary to prevent the creation of charts for virtual interfaces that will later be 
+        // recreated as container interfaces (create container) or
+        // rediscovered and recreated only to be deleted almost immediately (stop/remove container)
+        if (d->virtual && (now - d->discover_time < NETDEV_VIRTUAL_COLLECT_DELAY)) {
+            continue;
+        }
 
         if(likely(d->do_bandwidth != CONFIG_BOOLEAN_NO || !d->virtual)) {
             d->rbytes      = str2kernel_uint_t(procfile_lineword(ff, l, 1));
@@ -859,21 +1260,37 @@ int do_proc_net_dev(int update_every, usec_t dt) {
         if ((d->do_carrier != CONFIG_BOOLEAN_NO ||
              d->do_duplex != CONFIG_BOOLEAN_NO ||
              d->do_speed != CONFIG_BOOLEAN_NO) &&
-            d->filename_carrier) {
+             d->filename_carrier &&
+            (d->carrier_file_exists ||
+             now_monotonic_sec() - d->carrier_file_lost_time > READ_RETRY_PERIOD)) {
             if (read_single_number_file(d->filename_carrier, &d->carrier)) {
-                error("Cannot refresh interface %s carrier state by reading '%s'. Stop updating it.", d->name, d->filename_carrier);
-                freez(d->filename_carrier);
-                d->filename_carrier = NULL;
+                if (d->carrier_file_exists)
+                    collector_error(
+                        "Cannot refresh interface %s carrier state by reading '%s'. Next update is in %d seconds.",
+                        d->name,
+                        d->filename_carrier,
+                        READ_RETRY_PERIOD);
+                d->carrier_file_exists = 0;
+                d->carrier_file_lost_time = now_monotonic_sec();
+            } else {
+                d->carrier_file_exists = 1;
+                d->carrier_file_lost_time = 0;
             }
         }
 
-        if (d->do_duplex != CONFIG_BOOLEAN_NO && d->filename_duplex && (d->carrier || !d->filename_carrier)) {
+        if (d->do_duplex != CONFIG_BOOLEAN_NO &&
+            d->filename_duplex &&
+            (d->carrier || d->carrier_file_exists) &&
+            (d->duplex_file_exists ||
+             now_monotonic_sec() - d->duplex_file_lost_time > READ_RETRY_PERIOD)) {
             char buffer[STATE_LENGTH_MAX + 1];
 
             if (read_file(d->filename_duplex, buffer, STATE_LENGTH_MAX)) {
-                error("Cannot refresh interface %s duplex state by reading '%s'. I will stop updating it.", d->name, d->filename_duplex);
-                freez(d->filename_duplex);
-                d->filename_duplex = NULL;
+                if (d->duplex_file_exists)
+                    collector_error("Cannot refresh interface %s duplex state by reading '%s'.", d->name, d->filename_duplex);
+                d->duplex_file_exists = 0;
+                d->duplex_file_lost_time = now_monotonic_sec();
+                d->duplex = NETDEV_DUPLEX_UNKNOWN;
             } else {
                 // values can be unknown, half or full -- just check the first letter for speed
                 if (buffer[0] == 'f')
@@ -882,16 +1299,18 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->duplex = NETDEV_DUPLEX_HALF;
                 else
                     d->duplex = NETDEV_DUPLEX_UNKNOWN;
+                d->duplex_file_exists = 1;
+                d->duplex_file_lost_time = 0;
             }
         } else {
-            d->duplex = 0;
+            d->duplex = NETDEV_DUPLEX_UNKNOWN;
         }
 
         if(d->do_operstate != CONFIG_BOOLEAN_NO && d->filename_operstate) {
             char buffer[STATE_LENGTH_MAX + 1], *trimmed_buffer;
 
             if (read_file(d->filename_operstate, buffer, STATE_LENGTH_MAX)) {
-                error(
+                collector_error(
                     "Cannot refresh %s operstate by reading '%s'. Will not update its status anymore.",
                     d->name, d->filename_operstate);
                 freez(d->filename_operstate);
@@ -904,13 +1323,14 @@ int do_proc_net_dev(int update_every, usec_t dt) {
 
         if (d->do_mtu != CONFIG_BOOLEAN_NO && d->filename_mtu) {
             if (read_single_number_file(d->filename_mtu, &d->mtu)) {
-                error("Cannot refresh mtu for interface %s by reading '%s'. Stop updating it.", d->name, d->filename_mtu);
+                collector_error(
+                    "Cannot refresh mtu for interface %s by reading '%s'. Stop updating it.", d->name, d->filename_mtu);
                 freez(d->filename_mtu);
                 d->filename_mtu = NULL;
             }
         }
 
-        //info("PROC_NET_DEV: %s speed %zu, bytes %zu/%zu, packets %zu/%zu/%zu, errors %zu/%zu, drops %zu/%zu, fifo %zu/%zu, compressed %zu/%zu, rframe %zu, tcollisions %zu, tcarrier %zu"
+        //collector_info("PROC_NET_DEV: %s speed %zu, bytes %zu/%zu, packets %zu/%zu/%zu, errors %zu/%zu, drops %zu/%zu, fifo %zu/%zu, compressed %zu/%zu, rframe %zu, tcollisions %zu, tcarrier %zu"
         //        , d->name, d->speed
         //        , d->rbytes, d->tbytes
         //        , d->rpackets, d->tpackets, d->rmulticast
@@ -920,8 +1340,6 @@ int do_proc_net_dev(int update_every, usec_t dt) {
         //        , d->rcompressed, d->tcompressed
         //        , d->rframe, d->tcollisions, d->tcarrier
         //        );
-
-        // --------------------------------------------------------------------
 
         if(unlikely(d->do_bandwidth == CONFIG_BOOLEAN_AUTO &&
                     (d->rbytes || d->tbytes || netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES)))
@@ -958,11 +1376,15 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->rd_tbytes = td;
                 }
             }
-            else rrdset_next(d->st_bandwidth);
 
             rrddim_set_by_pointer(d->st_bandwidth, d->rd_rbytes, (collected_number)d->rbytes);
             rrddim_set_by_pointer(d->st_bandwidth, d->rd_tbytes, (collected_number)d->tbytes);
             rrdset_done(d->st_bandwidth);
+
+            if(d->cgroup_netdev_link)
+                cgroup_netdev_add_bandwidth(d->cgroup_netdev_link,
+                                            d->flipped ? d->rd_tbytes->collector.last_stored_value : -d->rd_rbytes->collector.last_stored_value,
+                                            d->flipped ? -d->rd_rbytes->collector.last_stored_value : d->rd_tbytes->collector.last_stored_value);
 
             // update the interface speed
             if(d->filename_speed) {
@@ -970,25 +1392,29 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->chart_var_speed =
                         rrdsetvar_custom_chart_variable_add_and_acquire(d->st_bandwidth, "nic_speed_max");
                     if(!d->chart_var_speed) {
-                        error("Cannot create interface %s chart variable 'nic_speed_max'. Will not update its speed anymore.", d->name);
+                        collector_error(
+                            "Cannot create interface %s chart variable 'nic_speed_max'. Will not update its speed anymore.",
+                            d->name);
                         freez(d->filename_speed);
                         d->filename_speed = NULL;
                     }
                 }
 
-                if(d->filename_speed && d->chart_var_speed) {
+                if (d->filename_speed && d->chart_var_speed) {
                     int ret = 0;
 
-                    if (d->carrier || !d->filename_carrier) {
+                    if ((d->carrier || d->carrier_file_exists) &&
+                        (d->speed_file_exists || now_monotonic_sec() - d->speed_file_lost_time > READ_RETRY_PERIOD)) {
                         ret = read_single_number_file(d->filename_speed, (unsigned long long *) &d->speed);
                     } else {
-                        d->speed = 0;
+                        d->speed = 0; // TODO: this is wrong, shouldn't use 0 value, but NULL.
                     }
 
                     if(ret) {
-                        error("Cannot refresh interface %s speed by reading '%s'. Will not update its speed anymore.", d->name, d->filename_speed);
-                        freez(d->filename_speed);
-                        d->filename_speed = NULL;
+                        if (d->speed_file_exists)
+                            collector_error("Cannot refresh interface %s speed by reading '%s'.", d->name, d->filename_speed);
+                        d->speed_file_exists = 0;
+                        d->speed_file_lost_time = now_monotonic_sec();
                     }
                     else {
                         if(d->do_speed != CONFIG_BOOLEAN_NO) {
@@ -1014,19 +1440,22 @@ int do_proc_net_dev(int update_every, usec_t dt) {
 
                                 d->rd_speed = rrddim_add(d->st_speed, "speed",  NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
                             }
-                            else rrdset_next(d->st_speed);
 
                             rrddim_set_by_pointer(d->st_speed, d->rd_speed, (collected_number)d->speed * KILOBITS_IN_A_MEGABIT);
                             rrdset_done(d->st_speed);
                         }
 
-                        rrdsetvar_custom_chart_variable_set(d->st_bandwidth, d->chart_var_speed, (NETDATA_DOUBLE) d->speed * KILOBITS_IN_A_MEGABIT);
+                        rrdsetvar_custom_chart_variable_set(
+                            d->st_bandwidth, d->chart_var_speed, (NETDATA_DOUBLE)d->speed * KILOBITS_IN_A_MEGABIT);
+
+                        if (d->speed) {
+                            d->speed_file_exists = 1;
+                            d->speed_file_lost_time = 0;
+                        }
                     }
                 }
             }
         }
-
-        // --------------------------------------------------------------------
 
         if(d->do_duplex != CONFIG_BOOLEAN_NO && d->filename_duplex) {
             if(unlikely(!d->st_duplex)) {
@@ -1053,15 +1482,12 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                 d->rd_duplex_half = rrddim_add(d->st_duplex, "half", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
                 d->rd_duplex_unknown = rrddim_add(d->st_duplex, "unknown", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
             }
-            else rrdset_next(d->st_duplex);
 
             rrddim_set_by_pointer(d->st_duplex, d->rd_duplex_full, (collected_number)(d->duplex == NETDEV_DUPLEX_FULL));
             rrddim_set_by_pointer(d->st_duplex, d->rd_duplex_half, (collected_number)(d->duplex == NETDEV_DUPLEX_HALF));
             rrddim_set_by_pointer(d->st_duplex, d->rd_duplex_unknown, (collected_number)(d->duplex == NETDEV_DUPLEX_UNKNOWN));
             rrdset_done(d->st_duplex);
         }
-
-        // --------------------------------------------------------------------
 
         if(d->do_operstate != CONFIG_BOOLEAN_NO && d->filename_operstate) {
             if(unlikely(!d->st_operstate)) {
@@ -1092,7 +1518,6 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                 d->rd_operstate_dormant = rrddim_add(d->st_operstate, "dormant", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
                 d->rd_operstate_unknown = rrddim_add(d->st_operstate, "unknown", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
             }
-            else rrdset_next(d->st_operstate);
 
             rrddim_set_by_pointer(d->st_operstate, d->rd_operstate_up, (collected_number)(d->operstate == NETDEV_OPERSTATE_UP));
             rrddim_set_by_pointer(d->st_operstate, d->rd_operstate_down, (collected_number)(d->operstate == NETDEV_OPERSTATE_DOWN));
@@ -1104,9 +1529,7 @@ int do_proc_net_dev(int update_every, usec_t dt) {
             rrdset_done(d->st_operstate);
         }
 
-        // --------------------------------------------------------------------
-
-        if(d->do_carrier != CONFIG_BOOLEAN_NO && d->filename_carrier) {
+        if(d->do_carrier != CONFIG_BOOLEAN_NO && d->carrier_file_exists) {
             if(unlikely(!d->st_carrier)) {
                 d->st_carrier = rrdset_create_localhost(
                         d->chart_type_net_carrier
@@ -1130,14 +1553,11 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                 d->rd_carrier_up = rrddim_add(d->st_carrier, "up",  NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
                 d->rd_carrier_down = rrddim_add(d->st_carrier, "down",  NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
             }
-            else rrdset_next(d->st_carrier);
 
             rrddim_set_by_pointer(d->st_carrier, d->rd_carrier_up, (collected_number)(d->carrier == 1));
             rrddim_set_by_pointer(d->st_carrier, d->rd_carrier_down, (collected_number)(d->carrier != 1));
             rrdset_done(d->st_carrier);
         }
-
-        // --------------------------------------------------------------------
 
         if(d->do_mtu != CONFIG_BOOLEAN_NO && d->filename_mtu) {
             if(unlikely(!d->st_mtu)) {
@@ -1162,13 +1582,10 @@ int do_proc_net_dev(int update_every, usec_t dt) {
 
                 d->rd_mtu = rrddim_add(d->st_mtu, "mtu",  NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
             }
-            else rrdset_next(d->st_mtu);
 
             rrddim_set_by_pointer(d->st_mtu, d->rd_mtu, (collected_number)d->mtu);
             rrdset_done(d->st_mtu);
         }
-
-        // --------------------------------------------------------------------
 
         if(unlikely(d->do_packets == CONFIG_BOOLEAN_AUTO &&
            (d->rpackets || d->tpackets || d->rmulticast || netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES)))
@@ -1208,15 +1625,12 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->rd_tpackets = td;
                 }
             }
-            else rrdset_next(d->st_packets);
 
             rrddim_set_by_pointer(d->st_packets, d->rd_rpackets, (collected_number)d->rpackets);
             rrddim_set_by_pointer(d->st_packets, d->rd_tpackets, (collected_number)d->tpackets);
             rrddim_set_by_pointer(d->st_packets, d->rd_rmulticast, (collected_number)d->rmulticast);
             rrdset_done(d->st_packets);
         }
-
-        // --------------------------------------------------------------------
 
         if(unlikely(d->do_errors == CONFIG_BOOLEAN_AUTO &&
                     (d->rerrors || d->terrors || netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES)))
@@ -1255,14 +1669,11 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->rd_terrors = td;
                 }
             }
-            else rrdset_next(d->st_errors);
 
             rrddim_set_by_pointer(d->st_errors, d->rd_rerrors, (collected_number)d->rerrors);
             rrddim_set_by_pointer(d->st_errors, d->rd_terrors, (collected_number)d->terrors);
             rrdset_done(d->st_errors);
         }
-
-        // --------------------------------------------------------------------
 
         if(unlikely(d->do_drops == CONFIG_BOOLEAN_AUTO &&
                     (d->rdrops || d->tdrops || netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES)))
@@ -1301,14 +1712,11 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->rd_tdrops = td;
                 }
             }
-            else rrdset_next(d->st_drops);
 
             rrddim_set_by_pointer(d->st_drops, d->rd_rdrops, (collected_number)d->rdrops);
             rrddim_set_by_pointer(d->st_drops, d->rd_tdrops, (collected_number)d->tdrops);
             rrdset_done(d->st_drops);
         }
-
-        // --------------------------------------------------------------------
 
         if(unlikely(d->do_fifo == CONFIG_BOOLEAN_AUTO &&
                     (d->rfifo || d->tfifo || netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES)))
@@ -1347,14 +1755,11 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->rd_tfifo = td;
                 }
             }
-            else rrdset_next(d->st_fifo);
 
             rrddim_set_by_pointer(d->st_fifo, d->rd_rfifo, (collected_number)d->rfifo);
             rrddim_set_by_pointer(d->st_fifo, d->rd_tfifo, (collected_number)d->tfifo);
             rrdset_done(d->st_fifo);
         }
-
-        // --------------------------------------------------------------------
 
         if(unlikely(d->do_compressed == CONFIG_BOOLEAN_AUTO &&
                     (d->rcompressed || d->tcompressed || netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES)))
@@ -1393,14 +1798,11 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                     d->rd_tcompressed = td;
                 }
             }
-            else rrdset_next(d->st_compressed);
 
             rrddim_set_by_pointer(d->st_compressed, d->rd_rcompressed, (collected_number)d->rcompressed);
             rrddim_set_by_pointer(d->st_compressed, d->rd_tcompressed, (collected_number)d->tcompressed);
             rrdset_done(d->st_compressed);
         }
-
-        // --------------------------------------------------------------------
 
         if(unlikely(d->do_events == CONFIG_BOOLEAN_AUTO &&
                     (d->rframe || d->tcollisions || d->tcarrier || netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES)))
@@ -1432,13 +1834,14 @@ int do_proc_net_dev(int update_every, usec_t dt) {
                 d->rd_tcollisions = rrddim_add(d->st_events, "collisions", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
                 d->rd_tcarrier    = rrddim_add(d->st_events, "carrier",    NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
             }
-            else rrdset_next(d->st_events);
 
             rrddim_set_by_pointer(d->st_events, d->rd_rframe,      (collected_number)d->rframe);
             rrddim_set_by_pointer(d->st_events, d->rd_tcollisions, (collected_number)d->tcollisions);
             rrddim_set_by_pointer(d->st_events, d->rd_tcarrier,    (collected_number)d->tcarrier);
             rrdset_done(d->st_events);
         }
+
+        d->function_ready = true;
     }
 
     if(do_bandwidth == CONFIG_BOOLEAN_YES || (do_bandwidth == CONFIG_BOOLEAN_AUTO &&
@@ -1467,8 +1870,6 @@ int do_proc_net_dev(int update_every, usec_t dt) {
             rd_in  = rrddim_add(st_system_net, "InOctets",  "received", 8, BITS_IN_A_KILOBIT, RRD_ALGORITHM_INCREMENTAL);
             rd_out = rrddim_add(st_system_net, "OutOctets", "sent",    -8, BITS_IN_A_KILOBIT, RRD_ALGORITHM_INCREMENTAL);
         }
-        else
-            rrdset_next(st_system_net);
 
         rrddim_set_by_pointer(st_system_net, rd_in,  (collected_number)system_rbytes);
         rrddim_set_by_pointer(st_system_net, rd_out, (collected_number)system_tbytes);
@@ -1485,7 +1886,7 @@ static void netdev_main_cleanup(void *ptr)
 {
     UNUSED(ptr);
 
-    info("cleaning up...");
+    collector_info("cleaning up...");
 
     worker_unregister();
 }
@@ -1497,22 +1898,31 @@ void *netdev_main(void *ptr)
 
     netdata_thread_cleanup_push(netdev_main_cleanup, ptr);
 
+    rrd_collector_started();
+    rrd_function_add(localhost, NULL, "network-interfaces", 10, RRDFUNCTIONS_NETDEV_HELP, true, netdev_function_net_interfaces, NULL);
+
     usec_t step = localhost->rrd_update_every * USEC_PER_SEC;
     heartbeat_t hb;
     heartbeat_init(&hb);
 
-    while (!netdata_exit) {
+    while (service_running(SERVICE_COLLECTORS)) {
         worker_is_idle();
         usec_t hb_dt = heartbeat_next(&hb, step);
 
-        if (unlikely(netdata_exit))
+        if (unlikely(!service_running(SERVICE_COLLECTORS)))
             break;
 
+        cgroup_netdev_reset_all();
+
         worker_is_busy(0);
+
+        netdata_mutex_lock(&netdev_dev_mutex);
         if(do_proc_net_dev(localhost->rrd_update_every, hb_dt))
             break;
+        netdata_mutex_unlock(&netdev_dev_mutex);
     }
 
     netdata_thread_cleanup_pop(1);
+
     return NULL;
 }

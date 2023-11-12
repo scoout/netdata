@@ -4,8 +4,6 @@
 #include "proto/alarm/v1/config.pb.h"
 #include "proto/alarm/v1/stream.pb.h"
 #include "proto/aclk/v1/lib.pb.h"
-#include "proto/chart/v1/config.pb.h"
-#include "proto/chart/v1/stream.pb.h"
 #include "proto/agent/v1/connection.pb.h"
 #include "proto/agent/v1/disconnect.pb.h"
 #include "proto/nodeinstance/connection/v1/connection.pb.h"
@@ -13,6 +11,7 @@
 #include "proto/nodeinstance/info/v1/info.pb.h"
 #include "proto/context/v1/stream.pb.h"
 #include "proto/context/v1/context.pb.h"
+#include "proto/agent/v1/cmds.pb.h"
 
 #include "libnetdata/libnetdata.h"
 
@@ -29,18 +28,10 @@ static google::protobuf::Message *msg_name_to_protomsg(const char *msgname)
         return new nodeinstance::v1::UpdateNodeInstanceConnection;
     if (!strcmp(msgname, "CreateNodeInstance"))
         return new nodeinstance::create::v1::CreateNodeInstance;
-    if (!strcmp(msgname, "ChartsAndDimensionsUpdated"))
-        return new chart::v1::ChartsAndDimensionsUpdated;
-    if (!strcmp(msgname, "ChartConfigsUpdated"))
-        return new chart::v1::ChartConfigsUpdated;
-    if (!strcmp(msgname, "ResetChartMessages"))
-        return new chart::v1::ResetChartMessages;
-    if (!strcmp(msgname, "RetentionUpdated"))
-        return new chart::v1::RetentionUpdated;
     if (!strcmp(msgname, "UpdateNodeInfo"))
         return new nodeinstance::info::v1::UpdateNodeInfo;
-    if (!strcmp(msgname, "AlarmLogHealth"))
-        return new alarms::v1::AlarmLogHealth;
+    if (!strcmp(msgname, "AlarmCheckpoint"))
+        return new alarms::v1::AlarmCheckpoint;
     if (!strcmp(msgname, "ProvideAlarmConfiguration"))
         return new alarms::v1::ProvideAlarmConfiguration;
     if (!strcmp(msgname, "AlarmSnapshot"))
@@ -59,16 +50,10 @@ static google::protobuf::Message *msg_name_to_protomsg(const char *msgname)
         return new nodeinstance::create::v1::CreateNodeInstanceResult;
     if (!strcmp(msgname, "SendNodeInstances"))
         return new agent::v1::SendNodeInstances;
-    if (!strcmp(msgname, "StreamChartsAndDimensions"))
-        return new chart::v1::StreamChartsAndDimensions;
-    if (!strcmp(msgname, "ChartsAndDimensionsAck"))
-        return new chart::v1::ChartsAndDimensionsAck;
-    if (!strcmp(msgname, "UpdateChartConfigs"))
-        return new chart::v1::UpdateChartConfigs;
     if (!strcmp(msgname, "StartAlarmStreaming"))
         return new alarms::v1::StartAlarmStreaming;
-    if (!strcmp(msgname, "SendAlarmLogHealth"))
-        return new alarms::v1::SendAlarmLogHealth;
+    if (!strcmp(msgname, "SendAlarmCheckpoint"))
+        return new alarms::v1::SendAlarmCheckpoint;
     if (!strcmp(msgname, "SendAlarmConfiguration"))
         return new alarms::v1::SendAlarmConfiguration;
     if (!strcmp(msgname, "SendAlarmSnapshot"))
@@ -79,6 +64,8 @@ static google::protobuf::Message *msg_name_to_protomsg(const char *msgname)
         return new context::v1::ContextsCheckpoint;
     if (!strcmp(msgname, "StopStreamingContexts"))
         return new context::v1::StopStreamingContexts;
+    if (!strcmp(msgname, "CancelPendingRequest"))
+        return new agent::v1::CancelPendingRequest;
 
     return NULL;
 }

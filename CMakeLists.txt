@@ -9,31 +9,25 @@ project(netdata C CXX)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
+include(CheckFunctionExists)
+include(CheckLibraryExists)
+
 # default is "Debug"
 #set(CMAKE_BUILD_TYPE "Release")
 
 # set this to see the compilation commands
-# set(CMAKE_VERBOSE_MAKEFILE 1)
-
+#set(CMAKE_VERBOSE_MAKEFILE 1)
 
 # -----------------------------------------------------------------------------
 # Set compilation options according to build type
 
-IF("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
-    message(STATUS "building for: debugging")
+set(CMAKE_C_STANDARD 11)
 
-    ## unfortunately these produce errors
-    #include(CheckCXXCompilerFlag)
-    #CHECK_CXX_COMPILER_FLAG("-Wformat-signedness" CXX_FORMAT_SIGNEDNESS)
-    #CHECK_CXX_COMPILER_FLAG("-Werror=format-security" CXX_FORMAT_SECURITY)
-    #CHECK_CXX_COMPILER_FLAG("-fstack-protector-all" CXX_STACK_PROTECTOR)
-    set(CXX_FORMAT_SIGNEDNESS "-Wformat-signedness")
-    set(CXX_FORMAT_SECURITY "-Werror=format-security")
-    set(CXX_STACK_PROTECTOR "-fstack-protector-all")
-    set(CXX_FLAGS_DEBUG "-O0")
-    set(CMAKE_C_STANDARD 99)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -ggdb -Wall -Wextra -DNETDATA_INTERNAL_CHECKS=1 -DNETDATA_VERIFY_LOCKS=1 ${CXX_FORMAT_SIGNEDNESS} ${CXX_FORMAT_SECURITY} ${CXX_STACK_PROTECTOR} ${CXX_FLAGS_DEBUG}")
+IF("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+    set(CXX_DEFAULT_CFLAGS "-O0 -g -DNETDATA_INTERNAL_CHECKS=1 -DNETDATA_DEV_MODE=1 -fstack-protector-all -fno-omit-frame-pointer")
+    message(STATUS "building for: debugging")
 ELSE()
+    set(CXX_DEFAULT_CFLAGS "-O2")
     message(STATUS "building for: release")
     cmake_policy(SET CMP0069 "NEW")
     include(CheckIPOSupported)
@@ -46,6 +40,7 @@ ELSE()
     ENDIF()
 ENDIF()
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -ggdb -Wall -Wextra -Wformat-signedness -Werror=format-security -Wunused-result ${CXX_DEFAULT_CFLAGS}")
 
 # -----------------------------------------------------------------------------
 # O/S Detection
@@ -66,6 +61,15 @@ ENDIF()
 
 # show the operating system on the console
 message(STATUS "system name: ${CMAKE_SYSTEM_NAME}")
+
+set(GENERATED_CONFIG_H_DIR ${CMAKE_BINARY_DIR})
+set(GENERATED_CONFIG_H ${GENERATED_CONFIG_H_DIR}/config.h)
+
+# -----------------------------------------------------------------------------
+# Math
+
+set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} m)
+set(NETDATA_REQUIRED_DEFINES "-DSTORAGE_WITH_MATH=1 ${NETDATA_REQUIRED_DEFINES}")
 
 # -----------------------------------------------------------------------------
 # Detect libuuid
@@ -98,6 +102,7 @@ pkg_check_modules(LIBLZ4 REQUIRED liblz4)
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${LIBLZ4_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${LIBLZ4_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${LIBLZ4_INCLUDE_DIRS})
+# set(NETDATA_REQUIRED_DEFINES "${NETDATA_REQUIRED_DEFINES} -DENABLE_LZ4=1")
 
 # -----------------------------------------------------------------------------
 # Judy General purpose dynamic array
@@ -111,6 +116,7 @@ pkg_check_modules(OPENSSL REQUIRED openssl)
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${OPENSSL_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${OPENSSL_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIRS})
+# set(NETDATA_REQUIRED_DEFINES "${NETDATA_REQUIRED_DEFINES} -DENABLE_HTTPS=1")
 
 # -----------------------------------------------------------------------------
 # JSON-C used to health
@@ -345,11 +351,10 @@ ENDIF()
 # Detect ml dependencies
 file(STRINGS "${CMAKE_SOURCE_DIR}/config.h" DEFINE_ENABLE_ML REGEX "^#define ENABLE_ML 1$")
 IF(DEFINE_ENABLE_ML MATCHES ".+" AND
-   EXISTS "${CMAKE_SOURCE_DIR}/ml/kmeans/dlib/dlib/all/source.cpp" AND
-   EXISTS "${CMAKE_SOURCE_DIR}/ml/json/single_include/nlohmann/json.hpp")
+   EXISTS "${CMAKE_SOURCE_DIR}/ml/dlib/dlib/all/source.cpp")
     set(ENABLE_ML True)
     list(APPEND NETDATA_COMMON_CFLAGS "-DDLIB_NO_GUI_SUPPORT")
-    list(APPEND NETDATA_COMMON_INCLUDE_DIRS "ml/kmeans/dlib")
+    list(APPEND NETDATA_COMMON_INCLUDE_DIRS "ml/dlib")
 ELSE()
     set(ENABLE_ML False)
 ENDIF()
@@ -381,38 +386,19 @@ set(LIBJUDY_SOURCES
         libnetdata/libjudy/src/JudyL/JudyLNextEmpty.c
         libnetdata/libjudy/src/JudyL/JudyLPrev.c
         libnetdata/libjudy/src/JudyL/JudyLPrevEmpty.c
-        JudyLTables.c
+        libnetdata/libjudy/src/JudyL/JudyLTables.c
         libnetdata/libjudy/src/JudyHS/JudyHS.c)
 
 ADD_LIBRARY(judy STATIC
              ${LIBJUDY_SOURCES})
 
-ADD_EXECUTABLE(judyltablesgen
-    libnetdata/libjudy/src/JudyL/JudyLTablesGen.c)
-
-target_include_directories(judyltablesgen PUBLIC
-    libnetdata/libjudy/src
-    libnetdata/libjudy/src/JudyCommon)
-
-target_compile_options(judyltablesgen PUBLIC
-    -Wno-format
-    -Wno-format-security)
-
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/libnetdata/libjudy/src)
-
-target_compile_definitions(judyltablesgen PUBLIC
-    JU_64BIT
-    JUDYL)
-
-add_custom_command(
-  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/JudyLTables.c
-  COMMAND judyltablesgen
-  DEPENDS judyltablesgen
-  )
 
 target_include_directories(judy PUBLIC
     libnetdata/libjudy/src
     libnetdata/libjudy/src/JudyCommon)
+
+target_include_directories(judy BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
 
 target_compile_definitions(judy PUBLIC
     JU_64BIT
@@ -444,8 +430,8 @@ set(LIBNETDATA_FILES
         libnetdata/adaptive_resortable_list/adaptive_resortable_list.h
         libnetdata/config/appconfig.c
         libnetdata/config/appconfig.h
-        libnetdata/arrayalloc/arrayalloc.c
-        libnetdata/arrayalloc/arrayalloc.h
+        libnetdata/aral/aral.c
+        libnetdata/aral/aral.h
         libnetdata/avl/avl.c
         libnetdata/avl/avl.h
         libnetdata/buffer/buffer.c
@@ -460,8 +446,12 @@ set(LIBNETDATA_FILES
         libnetdata/dictionary/dictionary.h
         libnetdata/eval/eval.c
         libnetdata/eval/eval.h
+        libnetdata/gorilla/gorilla.cc
+        libnetdata/gorilla/gorilla.h
         libnetdata/health/health.c
         libnetdata/health/health.h
+        libnetdata/july/july.c
+        libnetdata/july/july.h
         libnetdata/inlined.h
         libnetdata/json/json.c
         libnetdata/json/json.h
@@ -498,9 +488,16 @@ set(LIBNETDATA_FILES
         libnetdata/threads/threads.h
         libnetdata/url/url.c
         libnetdata/url/url.h
+        libnetdata/dyn_conf/dyn_conf.c
+        libnetdata/dyn_conf/dyn_conf.h
         libnetdata/string/utf8.h
         libnetdata/worker_utilization/worker_utilization.c
         libnetdata/worker_utilization/worker_utilization.h
+        libnetdata/facets/facets.c
+        libnetdata/facets/facets.h
+        libnetdata/functions_evloop/functions_evloop.h
+        libnetdata/functions_evloop/functions_evloop.c
+        libnetdata/http/http_defs.h
         )
 
 IF(ENABLE_PLUGIN_EBPF)
@@ -511,11 +508,17 @@ ENDIF()
 
 add_library(libnetdata OBJECT ${LIBNETDATA_FILES})
 
+target_include_directories(libnetdata BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
+
 set(APPS_PLUGIN_FILES
         collectors/apps.plugin/apps_plugin.c)
 
-set(CHECKS_PLUGIN_FILES
-        collectors/checks.plugin/plugin_checks.c
+set(DEBUGFS_PLUGIN_FILES
+        collectors/debugfs.plugin/debugfs_plugin.c
+        collectors/debugfs.plugin/debugfs_plugin.h
+        collectors/debugfs.plugin/debugfs_extfrag.c
+        collectors/debugfs.plugin/debugfs_zswap.c
+        collectors/debugfs.plugin/sys_devices_virtual_powercap.c
         )
 
 set(FREEBSD_PLUGIN_FILES
@@ -557,6 +560,10 @@ set(DISKSPACE_PLUGIN_FILES
 
 set(TIMEX_PLUGIN_FILES
         collectors/timex.plugin/plugin_timex.c
+        )
+
+set(PROFILE_PLUGIN_FILES
+        collectors/profile.plugin/plugin_profile.cc
         )
 
 set(FREEIPMI_PLUGIN_FILES
@@ -622,6 +629,10 @@ set(EBPF_PROCESS_PLUGIN_FILES
         collectors/ebpf.plugin/ebpf_apps.h
         collectors/ebpf.plugin/ebpf_cgroup.c
         collectors/ebpf.plugin/ebpf_cgroup.h
+        collectors/ebpf.plugin/ebpf_unittest.c
+        collectors/ebpf.plugin/ebpf_unittest.h
+        collectors/ebpf.plugin/ebpf_functions.c
+        collectors/ebpf.plugin/ebpf_functions.h
         )
 
 set(PROC_PLUGIN_FILES
@@ -641,8 +652,6 @@ set(PROC_PLUGIN_FILES
         collectors/proc.plugin/proc_net_netstat.c
         collectors/proc.plugin/proc_net_rpc_nfs.c
         collectors/proc.plugin/proc_net_rpc_nfsd.c
-        collectors/proc.plugin/proc_net_snmp.c
-        collectors/proc.plugin/proc_net_snmp6.c
         collectors/proc.plugin/proc_net_sctp_snmp.c
         collectors/proc.plugin/proc_net_sockstat.c
         collectors/proc.plugin/proc_net_sockstat6.c
@@ -667,6 +676,8 @@ set(PROC_PLUGIN_FILES
         collectors/proc.plugin/sys_class_infiniband.c
         collectors/proc.plugin/sys_fs_btrfs.c
         collectors/proc.plugin/sys_class_power_supply.c
+        collectors/proc.plugin/sys_devices_pci_aer.c
+        collectors/proc.plugin/sys_class_drm.c
         )
 
 set(TC_PLUGIN_FILES
@@ -688,11 +699,6 @@ set(PLUGINSD_PLUGIN_FILES
         collectors/plugins.d/pluginsd_parser.h
         )
 
-set(PARSER_PLUGIN_FILES
-        parser/parser.c
-        parser/parser.h
-        )
-
 set(REGISTRY_PLUGIN_FILES
         registry/registry.c
         registry/registry.h
@@ -705,27 +711,41 @@ set(REGISTRY_PLUGIN_FILES
         registry/registry_machine.h
         registry/registry_person.c
         registry/registry_person.h
-        registry/registry_url.c
-        registry/registry_url.h
         )
 
 set(STATSD_PLUGIN_FILES
         collectors/statsd.plugin/statsd.c
         )
 
+set(SYSTEMD_JOURNAL_PLUGIN_FILES
+        collectors/systemd-journal.plugin/systemd-journal.c
+        )
+
 set(RRD_PLUGIN_FILES
+        database/contexts/api_v1.c
+        database/contexts/api_v2.c
+        database/contexts/context.c
+        database/contexts/instance.c
+        database/contexts/internal.h
+        database/contexts/metric.c
+        database/contexts/query_scope.c
+        database/contexts/query_target.c
+        database/contexts/rrdcontext.c
+        database/contexts/rrdcontext.h
+        database/contexts/worker.c
         database/rrdcalc.c
         database/rrdcalc.h
         database/rrdcalctemplate.c
         database/rrdcalctemplate.h
-        database/rrdcontext.c
-        database/rrdcontext.h
         database/rrddim.c
         database/rrddimvar.c
         database/rrddimvar.h
         database/rrdfamily.c
+        database/rrdfunctions.c
+        database/rrdfunctions.h
         database/rrdhost.c
         database/rrdlabels.c
+        database/rrdlabels.h
         database/rrd.c
         database/rrd.h
         database/rrdset.c
@@ -737,9 +757,11 @@ set(RRD_PLUGIN_FILES
         database/storage_engine.h
         database/ram/rrddim_mem.c
         database/ram/rrddim_mem.h
+        database/sqlite/sqlite_metadata.c
+        database/sqlite/sqlite_metadata.h
         database/sqlite/sqlite_functions.c
         database/sqlite/sqlite_functions.h
-		database/sqlite/sqlite_context.c
+        database/sqlite/sqlite_context.c
         database/sqlite/sqlite_context.h
         database/sqlite/sqlite_db_migration.c
         database/sqlite/sqlite_db_migration.h
@@ -749,12 +771,13 @@ set(RRD_PLUGIN_FILES
         database/sqlite/sqlite_health.h
         database/sqlite/sqlite_aclk_node.c
         database/sqlite/sqlite_aclk_node.h
-        database/sqlite/sqlite_aclk_chart.c
-        database/sqlite/sqlite_aclk_chart.h
         database/sqlite/sqlite_aclk_alert.c
         database/sqlite/sqlite_aclk_alert.h
         database/sqlite/sqlite3.c
         database/sqlite/sqlite3.h
+        database/sqlite/sqlite3recover.c
+        database/sqlite/sqlite3recover.h
+        database/sqlite/dbdata.c
         database/engine/rrdengine.c
         database/engine/rrdengine.h
         database/engine/rrddiskprotocol.h
@@ -768,18 +791,12 @@ set(RRD_PLUGIN_FILES
         database/engine/rrdengineapi.h
         database/engine/pagecache.c
         database/engine/pagecache.h
-        database/engine/rrdenglocking.c
-        database/engine/rrdenglocking.h
-        database/engine/metadata_log/metadatalog.h
-        database/engine/metadata_log/metadatalogapi.c
-        database/engine/metadata_log/metadatalogapi.h
-        database/engine/metadata_log/logfile.h
-        database/engine/metadata_log/logfile.c
-        database/engine/metadata_log/metadatalogprotocol.h
-        database/engine/metadata_log/metalogpluginsd.c
-        database/engine/metadata_log/metalogpluginsd.h
-        database/engine/metadata_log/compaction.c
-        database/engine/metadata_log/compaction.h
+        database/engine/cache.c
+        database/engine/cache.h
+        database/engine/metric.c
+        database/engine/metric.h
+        database/engine/pdc.c
+        database/engine/pdc.h
         database/KolmogorovSmirnovDist.c
         database/KolmogorovSmirnovDist.h
         )
@@ -796,8 +813,12 @@ set(WEB_PLUGIN_FILES
         )
 
 set(API_PLUGIN_FILES
+        web/api/web_api.c
+        web/api/web_api.h
         web/api/web_api_v1.c
         web/api/web_api_v1.h
+        web/api/web_api_v2.c
+        web/api/web_api_v2.h
         web/api/badges/web_buffer_svg.c
         web/api/badges/web_buffer_svg.h
         web/api/exporters/allmetrics.c
@@ -851,6 +872,8 @@ set(API_PLUGIN_FILES
         web/api/formatters/rrdset2json.c
         web/api/formatters/rrdset2json.h
         web/api/health/health_cmdapi.c
+        web/rtc/webrtc.c
+        web/rtc/webrtc.h
         )
 
 set(STREAMING_PLUGIN_FILES
@@ -859,6 +882,9 @@ set(STREAMING_PLUGIN_FILES
         streaming/compression.c
         streaming/receiver.c
         streaming/sender.c
+        streaming/replication.c
+        streaming/replication.h
+        streaming/common.h
         )
 
 set(CLAIM_PLUGIN_FILES
@@ -872,6 +898,8 @@ set(ACLK_ALWAYS_BUILD
         aclk/aclk_proxy.h
         aclk/aclk.c
         aclk/aclk.h
+        aclk/aclk_capas.c
+        aclk/aclk_capas.h
         )
 
 set(ACLK_FILES
@@ -891,38 +919,16 @@ set(ACLK_FILES
         aclk/aclk_rx_msgs.h
         aclk/https_client.c
         aclk/https_client.h
-        aclk/aclk_charts_api.c
-        aclk/aclk_charts_api.h
         aclk/aclk_alarm_api.c
         aclk/aclk_alarm_api.h
         aclk/aclk_contexts_api.c
         aclk/aclk_contexts_api.h
-        mqtt_websockets/src/mqtt_wss_client.c
-        mqtt_websockets/src/include/mqtt_wss_client.h
-        mqtt_websockets/src/mqtt_wss_log.c
-        mqtt_websockets/src/include/mqtt_wss_log.h
-        mqtt_websockets/src/ws_client.c
-        mqtt_websockets/src/include/ws_client.h
-        mqtt_websockets/src/mqtt_ng.c
-        mqtt_websockets/src/include/mqtt_ng.h
-        mqtt_websockets/src/common_public.c
-        mqtt_websockets/src/include/common_public.h
-        mqtt_websockets/src/include/common_internal.h
-        mqtt_websockets/c-rbuf/src/ringbuffer.c
-        mqtt_websockets/c-rbuf/include/ringbuffer.h
-        mqtt_websockets/c-rbuf/src/ringbuffer_internal.h
-        mqtt_websockets/MQTT-C/src/mqtt.c
-        mqtt_websockets/MQTT-C/include/mqtt.h
         aclk/schema-wrappers/connection.cc
         aclk/schema-wrappers/connection.h
         aclk/schema-wrappers/node_connection.cc
         aclk/schema-wrappers/node_connection.h
         aclk/schema-wrappers/node_creation.cc
         aclk/schema-wrappers/node_creation.h
-        aclk/schema-wrappers/chart_stream.cc
-        aclk/schema-wrappers/chart_stream.h
-        aclk/schema-wrappers/chart_config.cc
-        aclk/schema-wrappers/chart_config.h
         aclk/schema-wrappers/alarm_stream.cc
         aclk/schema-wrappers/alarm_stream.h
         aclk/schema-wrappers/alarm_config.cc
@@ -940,6 +946,27 @@ set(ACLK_FILES
         aclk/schema-wrappers/schema_wrappers.h
         aclk/schema-wrappers/schema_wrapper_utils.cc
         aclk/schema-wrappers/schema_wrapper_utils.h
+        aclk/schema-wrappers/agent_cmds.cc
+        aclk/schema-wrappers/agent_cmds.h
+        aclk/helpers/mqtt_wss_pal.h
+        aclk/helpers/ringbuffer_pal.h
+        )
+
+set(MQTT_WEBSOCKETS_FILES
+        mqtt_websockets/src/mqtt_wss_client.c
+        mqtt_websockets/src/include/mqtt_wss_client.h
+        mqtt_websockets/src/mqtt_wss_log.c
+        mqtt_websockets/src/include/mqtt_wss_log.h
+        mqtt_websockets/src/ws_client.c
+        mqtt_websockets/src/include/ws_client.h
+        mqtt_websockets/src/mqtt_ng.c
+        mqtt_websockets/src/include/mqtt_ng.h
+        mqtt_websockets/src/common_public.c
+        mqtt_websockets/src/include/common_public.h
+        mqtt_websockets/src/include/common_internal.h
+        mqtt_websockets/c-rbuf/src/ringbuffer.c
+        mqtt_websockets/c-rbuf/include/ringbuffer.h
+        mqtt_websockets/c-rbuf/src/ringbuffer_internal.h
         )
 
 set(SPAWN_PLUGIN_FILES
@@ -1002,6 +1029,8 @@ set(DAEMON_FILES
         daemon/common.h
         daemon/daemon.c
         daemon/daemon.h
+        daemon/event_loop.c
+        daemon/event_loop.h
         daemon/global_statistics.c
         daemon/global_statistics.h
         daemon/analytics.c
@@ -1024,30 +1053,21 @@ set(ML_FILES
     ml/ml-dummy.c
 )
 
+# -----------------------------------------------------------------------------
+# ML
+
 IF(ENABLE_ML)
+    message(STATUS "ML: enabled")
     list(APPEND ML_FILES
-            ml/BitBufferCounter.h
-            ml/BitBufferCounter.cc
-            ml/BitRateWindow.h
-            ml/BitRateWindow.cc
-            ml/Config.h
+            ml/ad_charts.h
+            ml/ad_charts.cc
             ml/Config.cc
-            ml/Database.h
-            ml/Database.cc
-            ml/Dimension.cc
-            ml/Dimension.h
-            ml/Host.h
-            ml/Host.cc
-            ml/Query.h
-            ml/kmeans/KMeans.h
-            ml/kmeans/KMeans.cc
-            ml/kmeans/SamplesBuffer.h
-            ml/kmeans/SamplesBuffer.cc
-            ml/kmeans/dlib/dlib/all/source.cpp
-            ml/json/single_include/nlohmann/json.hpp
+            ml/dlib/dlib/all/source.cpp
             ml/ml.cc
             ml/ml-private.h
     )
+ELSE()
+    message(STATUS "ML: disabled")
 ENDIF()
 
 set(NETDATA_FILES
@@ -1055,7 +1075,6 @@ set(NETDATA_FILES
         ${DAEMON_FILES}
         ${API_PLUGIN_FILES}
         ${EXPORTING_ENGINE_FILES}
-        ${CHECKS_PLUGIN_FILES}
         ${HEALTH_PLUGIN_FILES}
         ${IDLEJITTER_PLUGIN_FILES}
         ${ML_FILES}
@@ -1063,11 +1082,11 @@ set(NETDATA_FILES
         ${RRD_PLUGIN_FILES}
         ${REGISTRY_PLUGIN_FILES}
         ${STATSD_PLUGIN_FILES}
+        ${SYSTEMD_JOURNAL_PLUGIN_FILES}
         ${STREAMING_PLUGIN_FILES}
         ${WEB_PLUGIN_FILES}
         ${CLAIM_PLUGIN_FILES}
         ${SPAWN_PLUGIN_FILES}
-        ${PARSER_PLUGIN_FILES}
 )
 
 set(NETDATACLI_FILES
@@ -1200,6 +1219,10 @@ ENDIF()
 
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} m ${CMAKE_THREAD_LIBS_INIT})
 
+option(ENABLE_ACLK "Enables functionality required to connect to cloud (must be activated by user at run time)" ON)
+
+if(ENABLE_ACLK)
+
 find_package(Protobuf REQUIRED)
 
 function(PROTOBUF_ACLK_GENERATE_CPP SRCS HDRS)
@@ -1244,28 +1267,41 @@ set(ACLK_PROTO_DEFS
         aclk/aclk-schemas/proto/agent/v1/connection.proto
         aclk/aclk-schemas/proto/alarm/v1/config.proto
         aclk/aclk-schemas/proto/alarm/v1/stream.proto
-        aclk/aclk-schemas/proto/chart/v1/config.proto
-        aclk/aclk-schemas/proto/chart/v1/dimension.proto
-        aclk/aclk-schemas/proto/chart/v1/instance.proto
-        aclk/aclk-schemas/proto/chart/v1/stream.proto
         aclk/aclk-schemas/proto/nodeinstance/connection/v1/connection.proto
         aclk/aclk-schemas/proto/nodeinstance/create/v1/creation.proto
         aclk/aclk-schemas/proto/nodeinstance/info/v1/info.proto
         aclk/aclk-schemas/proto/context/v1/context.proto
         aclk/aclk-schemas/proto/context/v1/stream.proto
+        aclk/aclk-schemas/proto/agent/v1/cmds.proto
         )
 PROTOBUF_ACLK_GENERATE_CPP(ACLK_PROTO_BUILT_SRCS ACLK_PROTO_BUILT_HDRS ${ACLK_PROTO_DEFS})
 
 list(APPEND NETDATA_COMMON_LIBRARIES ${PROTOBUF_LIBRARIES})
 list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS})
 list(APPEND NETDATA_COMMON_CFLAGS ${PROTOBUF_CFLAGS_OTHER})
-list(APPEND NETDATA_FILES ${ACLK_ALWAYS_BUILD})
-list(APPEND NETDATA_FILES ${TIMEX_PLUGIN_FILES})
 list(APPEND NETDATA_FILES ${ACLK_FILES} ${ACLK_PROTO_BUILT_SRCS} ${ACLK_PROTO_BUILT_HDRS})
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/aclk/aclk-schemas)
-include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/MQTT-C/include)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/c-rbuf/include)
+
+ADD_LIBRARY(mqttwebsockets STATIC
+            ${MQTT_WEBSOCKETS_FILES})
+
+target_compile_options(mqttwebsockets PUBLIC
+                        -DMQTT_WSS_CUSTOM_ALLOC
+                        -DRBUF_CUSTOM_MALLOC
+                        -DMQTT_WSS_CPUSTATS)
+
+target_include_directories(mqttwebsockets PUBLIC
+             ${CMAKE_SOURCE_DIR}/aclk/helpers)
+
+set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} mqttwebsockets)
+
+ENDIF()
+
+list(APPEND NETDATA_FILES ${ACLK_ALWAYS_BUILD})
+list(APPEND NETDATA_FILES ${TIMEX_PLUGIN_FILES})
+list(APPEND NETDATA_FILES ${PROFILE_PLUGIN_FILES})
 
 # -----------------------------------------------------------------------------
 # netdata
@@ -1274,7 +1310,7 @@ IF(LINUX)
     list(APPEND NETDATA_FILES daemon/static_threads_linux.c)
     list(APPEND NETDATA_COMMON_LIBRARIES rt)
 
-    add_executable(netdata config.h ${NETDATA_FILES}
+    add_executable(netdata ${GENERATED_CONFIG_H} ${NETDATA_FILES}
             ${CGROUPS_PLUGIN_FILES}
             ${DISKSPACE_PLUGIN_FILES}
             ${PROC_PLUGIN_FILES}
@@ -1282,6 +1318,7 @@ IF(LINUX)
             )
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+    target_include_directories(netdata BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
 
     SET(ENABLE_PLUGIN_CGROUP_NETWORK True)
@@ -1292,9 +1329,10 @@ IF(LINUX)
 ELSEIF(FREEBSD)
     list(APPEND NETDATA_FILES daemon/static_threads_freebsd.c)
 
-    add_executable(netdata config.h ${NETDATA_FILES} ${FREEBSD_PLUGIN_FILES})
+    add_executable(netdata ${GENERATED_CONFIG_H} ${NETDATA_FILES} ${FREEBSD_PLUGIN_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+    target_include_directories(netdata BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
     SET(ENABLE_PLUGIN_APPS True)
@@ -1305,9 +1343,10 @@ ELSEIF(FREEBSD)
 ELSEIF(MACOS)
     list(APPEND NETDATA_FILES daemon/static_threads_macos.c)
 
-    add_executable(netdata config.h ${NETDATA_FILES} ${MACOS_PLUGIN_FILES})
+    add_executable(netdata ${GENERATED_CONFIG_H} ${NETDATA_FILES} ${MACOS_PLUGIN_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES} ${IOKIT} ${FOUNDATION})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+    target_include_directories(netdata BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
     SET(ENABLE_PLUGIN_APPS False)
@@ -1350,10 +1389,26 @@ ENDIF()
 # -----------------------------------------------------------------------------
 # netdatacli
 
-add_executable(netdatacli config.h ${NETDATACLI_FILES})
+add_executable(netdatacli ${GENERATED_CONFIG_H} ${NETDATACLI_FILES})
 target_link_libraries (netdatacli libnetdata ${NETDATA_COMMON_LIBRARIES})
 target_include_directories(netdatacli PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+target_include_directories(netdatacli BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
 target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
+
+
+# -----------------------------------------------------------------------------
+# debugfs.plugin
+
+IF(ENABLE_PLUGIN_DEBUGFS)
+    message(STATUS "debugfs.plugin: enabled")
+    add_executable(debugfs.plugin ${GENERATED_CONFIG_H} ${DEBUGFS_PLUGIN_FILES})
+    target_link_libraries (debugfs.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CAP_LIBRARIES})
+    target_include_directories(debugfs.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CAP_INCLUDE_DIRS})
+    target_include_directories(debugfs.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
+    target_compile_options(debugfs.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CAP_CFLAGS_OTHER})
+ELSE()
+    message(STATUS "debugfs.plugin: disabled")
+ENDIF()
 
 
 # -----------------------------------------------------------------------------
@@ -1361,9 +1416,10 @@ target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
 
 IF(ENABLE_PLUGIN_APPS)
     message(STATUS "apps.plugin: enabled")
-    add_executable(apps.plugin config.h ${APPS_PLUGIN_FILES})
+    add_executable(apps.plugin ${GENERATED_CONFIG_H} ${APPS_PLUGIN_FILES})
     target_link_libraries (apps.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CAP_LIBRARIES})
     target_include_directories(apps.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CAP_INCLUDE_DIRS})
+    target_include_directories(apps.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(apps.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CAP_CFLAGS_OTHER})
 ELSE()
     message(STATUS "apps.plugin: disabled")
@@ -1375,9 +1431,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_FREEIPMI)
     message(STATUS "freeipmi.plugin: enabled")
-    add_executable(freeipmi.plugin config.h ${FREEIPMI_PLUGIN_FILES})
+    add_executable(freeipmi.plugin ${GENERATED_CONFIG_H} ${FREEIPMI_PLUGIN_FILES})
     target_link_libraries (freeipmi.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${IPMI_LIBRARIES})
     target_include_directories(freeipmi.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${IPMI_INCLUDE_DIRS})
+    target_include_directories(freeipmi.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(freeipmi.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${IPMI_CFLAGS_OTHER})
 ELSE()
     message(STATUS "freeipmi.plugin: disabled (depends on libipmimonitoring)")
@@ -1389,9 +1446,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_NFACCT)
     message(STATUS "nfacct.plugin: enabled")
-    add_executable(nfacct.plugin config.h ${NFACCT_PLUGIN_FILES})
+    add_executable(nfacct.plugin ${GENERATED_CONFIG_H} ${NFACCT_PLUGIN_FILES})
     target_link_libraries (nfacct.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${MNL_LIBRARIES} ${NFACCT_LIBRARIES})
     target_include_directories(nfacct.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${MNL_INCLUDE_DIRS} ${NFACCT_INCLUDE_DIRS})
+    target_include_directories(nfacct.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(nfacct.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${MNL_CFLAGS_OTHER} ${NFACCT_CFLAGS_OTHER})
 ELSE()
     message(STATUS "nfacct.plugin: disabled (requires libmnl and libnetfilter_acct)")
@@ -1403,9 +1461,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_XENSTAT)
     message(STATUS "xenstat.plugin: enabled")
-    add_executable(xenstat.plugin config.h ${XENSTAT_PLUGIN_FILES})
+    add_executable(xenstat.plugin ${GENERATED_CONFIG_H} ${XENSTAT_PLUGIN_FILES})
     target_link_libraries (xenstat.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${XENSTAT_LIBRARIES})
     target_include_directories(xenstat.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${XENSTAT_INCLUDE_DIRS})
+    target_include_directories(xenstat.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(xenstat.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${XENSTAT_CFLAGS_OTHER})
 ELSE()
     message(STATUS "xenstat.plugin: disabled (requires libxenstat)")
@@ -1417,9 +1476,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_PERF)
     message(STATUS "perf.plugin: enabled")
-    add_executable(perf.plugin config.h ${PERF_PLUGIN_FILES})
+    add_executable(perf.plugin ${GENERATED_CONFIG_H} ${PERF_PLUGIN_FILES})
     target_link_libraries (perf.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(perf.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+    target_include_directories(perf.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(perf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
 ELSE()
     message(STATUS "perf.plugin: disabled")
@@ -1431,9 +1491,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_EBPF)
     message(STATUS "ebpf.plugin: enabled")
-    add_executable(ebpf.plugin config.h ${EBPF_PROCESS_PLUGIN_FILES})
+    add_executable(ebpf.plugin ${GENERATED_CONFIG_H} ${EBPF_PROCESS_PLUGIN_FILES})
     target_link_libraries (ebpf.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(ebpf.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+    target_include_directories(ebpf.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(ebpf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
 ELSE()
     message(STATUS "ebpf.plugin: disabled")
@@ -1445,9 +1506,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_SLABINFO)
     message(STATUS "slabinfo.plugin: enabled")
-    add_executable(slabinfo.plugin config.h ${SLABINFO_PLUGIN_FILES})
+    add_executable(slabinfo.plugin ${GENERATED_CONFIG_H} ${SLABINFO_PLUGIN_FILES})
     target_link_libraries (slabinfo.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(slabinfo.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+    target_include_directories(slabinfo.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(slabinfo.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
 ELSE()
     message(STATUS "slabinfo.plugin: disabled")
@@ -1459,9 +1521,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_CUPS)
     message(STATUS "cups.plugin: enabled")
-    add_executable(cups.plugin config.h ${CUPS_PLUGIN_FILES})
+    add_executable(cups.plugin ${GENERATED_CONFIG_H} ${CUPS_PLUGIN_FILES})
     target_link_libraries (cups.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CUPS_LIBRARIES})
     target_include_directories(cups.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CUPS_INCLUDE_DIRS})
+    target_include_directories(cups.plugin BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(cups.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CUPS_CFLAGS_OTHER})
 ELSE()
     message(STATUS "cups.plugin: disabled")
@@ -1473,9 +1536,10 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_CGROUP_NETWORK)
     message(STATUS "cgroup-network: enabled")
-    add_executable(cgroup-network config.h ${CGROUP_NETWORK_FILES})
+    add_executable(cgroup-network ${GENERATED_CONFIG_H} ${CGROUP_NETWORK_FILES})
     target_link_libraries (cgroup-network libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(cgroup-network PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
+    target_include_directories(cgroup-network BEFORE PUBLIC ${GENERATED_CONFIG_H_DIR})
     target_compile_options(cgroup-network PUBLIC ${NETDATA_COMMON_CFLAGS})
 ELSE()
     message(STATUS "cgroup-network: disabled (requires Linux)")
@@ -1722,7 +1786,6 @@ if (HAVE_SYS_SYSMACROS_H)
 endif()
 
 if (CRYPTO_FOUND)
-    include(CheckLibraryExists)
     set(HAVE_CRYPTO True)
     FIND_LIBRARY(CRYPTO_LIBRARY_LOCATION NAMES crypto)
     check_library_exists(crypto X509_VERIFY_PARAM_set1_host ${CRYPTO_LIBRARY_LOCATION} HAVE_X509_VERIFY_PARAM_set1_host)
@@ -1753,5 +1816,24 @@ ELSE()
     SET(ALWAYS_UNUSED_MACRO "")
     SET(MAYBE_UNUSED_MACRO "")
 ENDIF()
+
+# -----------------------------------------------------------------------------
+
+check_library_exists(c clock_gettime "" HAVE_CLOCK_GETTIME)
+
+IF(NOT HAVE_CLOCK_GETTIME)
+    CHECK_LIBRARY_EXISTS(rt clock_gettime "" HAVE_CLOCK_GETTIME)
+ENDIF()
+
+IF(HAVE_CLOCK_GETTIME)
+    message("-- clock_gettime(): found")
+    set(NETDATA_REQUIRED_DEFINES "-DHAVE_CLOCK_GETTIME=1 ${NETDATA_REQUIRED_DEFINES}")
+ELSE()
+    message("-- clock_gettime(): not found")
+ENDIF()
+
+# -----------------------------------------------------------------------------
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${NETDATA_REQUIRED_DEFINES}")
+message("CFLAGS=\"${CMAKE_C_FLAGS}\"")
 
 configure_file(config.cmake.h.in config.h)

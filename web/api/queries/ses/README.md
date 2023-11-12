@@ -1,6 +1,10 @@
 <!--
 title: "Single (or Simple) Exponential Smoothing (`ses`)"
+sidebar_label: "Single (or Simple) Exponential Smoothing (`ses`)"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/queries/ses/README.md
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api/Queries"
 -->
 
 # Single (or Simple) Exponential Smoothing (`ses`)
@@ -30,10 +34,10 @@ You can change the fixed value `15` by setting in `netdata.conf`:
 
 ## how to use
 
-Use it in alarms like this:
+Use it in alerts like this:
 
 ```
- alarm: my_alarm
+ alarm: my_alert
     on: my_chart
 lookup: ses -1m unaligned of my_dimension
   warn: $this > 1000

@@ -19,18 +19,6 @@ void *__wrap_free_temporary_host(RRDHOST *host)
     return NULL;
 }
 
-RRDHOST *sql_create_host_by_uuid(char *hostname)
-{
-    (void) hostname;
-    return NULL;
-}
-
-RRDHOST *__wrap_sql_create_host_by_uuid(char *hostname)
-{
-    (void) hostname;
-    return NULL;
-}
-
 void repr(char *result, int result_size, char const *buf, int size)
 {
     int n;
@@ -58,7 +46,7 @@ void repr(char *result, int result_size, char const *buf, int size)
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags)
 {
-    info("Mocking send: %zu bytes\n", len);
+    netdata_log_info("Mocking send: %zu bytes\n", len);
     (void)sockfd;
     (void)buf;
     (void)flags;
@@ -97,7 +85,7 @@ int __wrap_web_client_api_request_v1(RRDHOST *host, struct web_client *w, char *
 {
     char url_repr[160];
     repr(url_repr, sizeof(url_repr), url, strlen(url));
-    info("web_client_api_request_v1(url=\"%s\")\n", url_repr);
+    netdata_log_info("web_client_api_request_v1(url=\"%s\")\n", url_repr);
     check_expected_ptr(host);
     check_expected_ptr(w);
     check_expected_ptr(url_repr);
@@ -314,7 +302,7 @@ static void api_info(void **state)
 
     char buffer_repr[1024];
     repr(buffer_repr, sizeof(buffer_repr), def->instance->response.data->buffer,def->prefix_len);
-    info("Buffer contains: %s [first %zu]", buffer_repr,def->prefix_len);
+    netdata_log_info("Buffer contains: %s [first %zu]", buffer_repr,def->prefix_len);
     if (def->prefix_len == def->full_len) {
         expect_value(__wrap_web_client_api_request_v1, host, localhost);
         expect_value(__wrap_web_client_api_request_v1, w, def->instance);

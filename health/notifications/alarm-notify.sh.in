@@ -3,7 +3,7 @@
 
 # netdata
 # real-time performance and health monitoring, done right!
-# (C) 2017 Costa Tsaousis <costa@tsaousis.gr>
+# (C) 2023 Netdata Inc.
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Script to send alarm notifications for netdata
@@ -18,7 +18,7 @@
 #  - emails by @ktsaou
 #  - slack.com notifications by @ktsaou
 #  - alerta.io notifications by @kattunga
-#  - discordapp.com notifications by @lowfive
+#  - discord.com notifications by @lowfive
 #  - pushover.net notifications by @ktsaou
 #  - pushbullet.com push notifications by Tiago Peralta @tperalta82 #1070
 #  - telegram.org notifications by @hashworks #1002
@@ -34,11 +34,10 @@
 #  - syslog messages by @Ferroin
 #  - Microsoft Team notification by @tioumen
 #  - RocketChat notifications by @Hermsi1337 #3777
-#  - Google Hangouts Chat notifications by @EnzoAkira and @hendrikhofstadt
 #  - Dynatrace Event by @illumine
-#  - Stackpulse Event by @thiagoftsm
 #  - Opsgenie by @thiaoftsm #9858
 #  - Gotify by @coffeegrind123
+#  - ntfy.sh by @Dim-P
 
 # -----------------------------------------------------------------------------
 # testing notifications
@@ -59,7 +58,7 @@ if { [ "${1}" = "test" ] || [ "${2}" = "test" ]; } && [ "${#}" -le 2 ]; then
     echo >&2
     echo >&2 "# SENDING TEST ${x} ALARM TO ROLE: ${recipient}"
 
-    "${0}" "${recipient}" "$(hostname)" 1 1 "${id}" "$(date +%s)" "test_alarm" "test.chart" "test.family" "${x}" "${last}" 100 90 "${0}" 1 $((0 + id)) "units" "this is a test alarm to verify notifications work" "new value" "old value" "evaluated expression" "expression variable values" 0 0
+    "${0}" "${recipient}" "$(hostname)" 1 1 "${id}" "$(date +%s)" "test_alarm" "test.chart" "${x}" "${last}" 100 90 "${0}" 1 $((0 + id)) "units" "this is a test alarm to verify notifications work" "new value" "old value" "evaluated expression" "expression variable values" 0 0 "" "" "Test" "command to edit the alarm=0=$(hostname)" "" "" "a test alarm"
     #shellcheck disable=SC2181
     if [ $? -ne 0 ]; then
       echo >&2 "# FAILED"
@@ -82,6 +81,21 @@ export LC_ALL=C
 
 PROGRAM_NAME="$(basename "${0}")"
 
+LOG_LEVEL_ERR=1
+LOG_LEVEL_WARN=2
+LOG_LEVEL_INFO=3
+LOG_LEVEL="$LOG_LEVEL_INFO"
+
+set_log_severity_level() {
+  case ${NETDATA_LOG_SEVERITY_LEVEL,,} in
+    "info") LOG_LEVEL="$LOG_LEVEL_INFO";;
+    "warn" | "warning") LOG_LEVEL="$LOG_LEVEL_WARN";;
+    "err" | "error") LOG_LEVEL="$LOG_LEVEL_ERR";;
+  esac
+}
+
+set_log_severity_level
+
 logdate() {
   date "+%Y-%m-%d %H:%M:%S"
 }
@@ -94,16 +108,19 @@ log() {
 
 }
 
+info() {
+  [[ -n "$LOG_LEVEL" && "$LOG_LEVEL_INFO" -gt "$LOG_LEVEL" ]] && return
+  log INFO "${@}"
+}
+
 warning() {
+  [[ -n "$LOG_LEVEL" && "$LOG_LEVEL_WARN" -gt "$LOG_LEVEL" ]] && return
   log WARNING "${@}"
 }
 
 error() {
+  [[ -n "$LOG_LEVEL" && "$LOG_LEVEL_ERR" -gt "$LOG_LEVEL" ]] && return
   log ERROR "${@}"
-}
-
-info() {
-  log INFO "${@}"
 }
 
 fatal() {
@@ -173,9 +190,9 @@ irc
 awssns
 rocketchat
 sms
-hangouts
 dynatrace
 matrix
+ntfy
 "
 
 # -----------------------------------------------------------------------------
@@ -222,35 +239,36 @@ else
   when="${6}"                # the timestamp this event occurred
   name="${7}"                # the name of the alarm, as given in netdata health.d entries
   chart="${8}"               # the name of the chart (type.id)
-  family="${9}"              # the family of the chart
-  status="${10}"             # the current status : REMOVED, UNINITIALIZED, UNDEFINED, CLEAR, WARNING, CRITICAL
-  old_status="${11}"         # the previous status: REMOVED, UNINITIALIZED, UNDEFINED, CLEAR, WARNING, CRITICAL
-  value="${12}"              # the current value of the alarm
-  old_value="${13}"          # the previous value of the alarm
-  src="${14}"                # the line number and file the alarm has been configured
-  duration="${15}"           # the duration in seconds of the previous alarm state
-  non_clear_duration="${16}" # the total duration in seconds this is/was non-clear
-  units="${17}"              # the units of the value
-  info="${18}"               # a short description of the alarm
-  value_string="${19}"       # friendly value (with units)
+  status="${9}"             # the current status : REMOVED, UNINITIALIZED, UNDEFINED, CLEAR, WARNING, CRITICAL
+  old_status="${10}"         # the previous status: REMOVED, UNINITIALIZED, UNDEFINED, CLEAR, WARNING, CRITICAL
+  value="${11}"              # the current value of the alarm
+  old_value="${12}"          # the previous value of the alarm
+  src="${13}"                # the line number and file the alarm has been configured
+  duration="${14}"           # the duration in seconds of the previous alarm state
+  non_clear_duration="${15}" # the total duration in seconds this is/was non-clear
+  units="${16}"              # the units of the value
+  info="${17}"               # a short description of the alarm
+  value_string="${18}"       # friendly value (with units)
   # shellcheck disable=SC2034
   # variable is unused, but https://github.com/netdata/netdata/pull/5164#discussion_r255572947
-  old_value_string="${20}"   # friendly old value (with units), previously named "old_value_string"
-  calc_expression="${21}"    # contains the expression that was evaluated to trigger the alarm
-  calc_param_values="${22}"  # the values of the parameters in the expression, at the time of the evaluation
-  total_warnings="${23}"     # Total number of alarms in WARNING state
-  total_critical="${24}"     # Total number of alarms in CRITICAL state
-  total_warn_alarms="${25}"  # List of alarms in warning state
-  total_crit_alarms="${26}"  # List of alarms in critical state
-  classification="${27}"     # The class field from .conf files
-  edit_command_line="${28}"  # The command to edit the alarm, with the line number
-  child_machine_guid="${29}" # If populated, the notification is sent for a child
+  old_value_string="${19}"   # friendly old value (with units), previously named "old_value_string"
+  calc_expression="${20}"    # contains the expression that was evaluated to trigger the alarm
+  calc_param_values="${21}"  # the values of the parameters in the expression, at the time of the evaluation
+  total_warnings="${22}"     # Total number of alarms in WARNING state
+  total_critical="${23}"     # Total number of alarms in CRITICAL state
+  total_warn_alarms="${24}"  # List of alarms in warning state
+  total_crit_alarms="${25}"  # List of alarms in critical state
+  classification="${26}"     # The class field from .conf files
+  edit_command_line="${27}"  # The command to edit the alarm, with the line number
+  child_machine_guid="${28}" # the machine_guid of the child
+  transition_id="${29}"      # the transition_id of the alert
+  summary="${30}"            # the summary text field of the alert
 fi
 
 # -----------------------------------------------------------------------------
 # find a suitable hostname to use, if netdata did not supply a hostname
 
-if [ -z ${args_host} ]; then
+if [ -z "${args_host}" ]; then
   this_host=$(hostname -s 2>/dev/null)
   host="${this_host}"
   args_host="${this_host}"
@@ -386,10 +404,6 @@ IRC_REALNAME=
 IRC_NETWORK=
 IRC_PORT=6667
 
-# hangouts configs
-declare -A HANGOUTS_WEBHOOK_URI
-declare -A HANGOUTS_WEBHOOK_THREAD
-
 # dynatrace configs
 DYNATRACE_SPACE=
 DYNATRACE_SERVER=
@@ -398,9 +412,6 @@ DYNATRACE_TAG_VALUE=
 DYNATRACE_ANNOTATION_TYPE=
 DYNATRACE_EVENT=
 SEND_DYNATRACE=
-
-# stackpulse configs
-STACKPULSE_WEBHOOK=
 
 # gotify configs
 GOTIFY_APP_URL=
@@ -484,53 +495,105 @@ msteams_migration
 # filter a recipient based on alarm event severity
 
 filter_recipient_by_criticality() {
-  local method="${1}" x="${2}" r s
-  shift
-
-  r="${x/|*/}" # the recipient
-  s="${x/*|/}" # the severity required for notifying this recipient
+  local method="${1}" recipient_arg="${2}"
+  local tracking_dir tracking_file modifier modifiers recipient="${recipient_arg/|*/}"
+  local mod_critical=0 mod_noclear=0 mod_nowarn=0
 
   # no severity filtering for this person
-  [ "${r}" = "${s}" ] && return 0
+  [ "${recipient}" = "${recipient_arg}" ] && return 0
 
-  # the severity is invalid
-  s="${s^^}"
-  if [ "${s}" != "CRITICAL" ]; then
-    error "SEVERITY FILTERING for ${x} VIA ${method}: invalid severity '${s,,}', only 'critical' is supported."
-    return 0
-  fi
+  # find out which modifiers are set
+  modifiers="${recipient_arg#*|}"
+  modifiers="${modifiers//|/ }" # replace pipes with spaces
+  modifiers="${modifiers,,}"    # lowercase
+  for modifier in ${modifiers}; do
+    case "${modifier}" in
+      critical) mod_critical=1 ;;
+      noclear) mod_noclear=1 ;;
+      nowarn) mod_nowarn=1 ;;
 
-  # create the status tracking directory for this user
-  [ ! -d "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}" ] &&
-    mkdir -p "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}"
+      *)
+        error "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: invalid modifier '${modifier}'."
+        # invalid modifier, always send notification
+        return 0
+      ;;
+    esac
+  done
+
+  # set status tracking directory/file var
+  tracking_dir="${NETDATA_CACHE_DIR}/alarm-notify/${method}/${recipient}"
+  tracking_file="${tracking_dir}/${alarm_id}"
+
+  # create the status tracking directory for this user if "critical" modifier is set
+  [ "${mod_critical}" == "1" ] && [ ! -d "${tracking_dir}" ] && mkdir -p "${tracking_dir}"
 
   case "${status}" in
-  CRITICAL)
-    # make sure he will get future notifications for this alarm too
-    touch "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}/${alarm_id}"
-    debug "SEVERITY FILTERING for ${x} VIA ${method}: ALLOW: the alarm is CRITICAL (will now receive next status change)"
-    return 0
-    ;;
+    CRITICAL)
+      # "critical" modifier set, create tracking file for future status changes
+      if [ "${mod_critical}" == "1" ]; then
+        touch "${tracking_file}"
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: ALLOW: the alarm is CRITICAL (will now receive next status change)"
+        return 0
+      fi
 
-  WARNING)
-    if [ -f "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}/${alarm_id}" ]; then
-      # we do not remove the file, so that he will get future notifications of this alarm
-      debug "SEVERITY FILTERING for ${x} VIA ${method}: ALLOW: recipient has been notified for this alarm in the past (will still receive next status change)"
+      # always send CRITICAL notification
+      debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: ALLOW: the alarm is CRITICAL"
       return 0
-    fi
-    ;;
+      ;;
 
-  *)
-    if [ -f "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}/${alarm_id}" ]; then
-      # remove the file, so that he will only receive notifications for CRITICAL states for this alarm
-      rm "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}/${alarm_id}"
-      debug "SEVERITY FILTERING for ${x} VIA ${method}: ALLOW: recipient has been notified for this alarm (will only receive CRITICAL notifications from now on)"
-      return 0
-    fi
-    ;;
+    WARNING)
+      # "nowarn" modifier set, block notification
+      if [ "${mod_nowarn}" == "1" ]; then
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: BLOCK: recipient should not receive this notification (nowarn modifier set)"
+        return 1
+      fi
+
+      # "critical" modifier not set, send notification
+      if [ "${mod_critical}" == "0" ]; then
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: ALLOW: the alarm is WARNING"
+        return 0
+      fi
+
+      # "critical" modifier set, send notification if tracking file exists
+      if [ "${mod_critical}" == "1" ] && [ -f "${tracking_file}" ]; then
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: ALLOW: recipient has been notified for this alarm in the past (will still receive next status change)"
+        return 0
+      fi
+      ;;
+
+    CLEAR)
+      # remove tracking file
+      [ -f "${tracking_file}" ] && rm "${tracking_file}"
+
+      # "noclear" modifier set, block notification
+      if [ "${mod_noclear}" == "1" ]; then
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: BLOCK: recipient should not receive this notification (noclear modifier set)"
+        return 1
+      fi
+
+      # "critical" modifier not set, send notification
+      if [ "${mod_critical}" == "0" ]; then
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: ALLOW: the alarm is CLEAR"
+        return 0
+      fi
+
+      # "critical" modifier set, send notification if tracking file exists
+      if [ "${mod_critical}" == "1" ] && [ -f "${tracking_file}" ]; then
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: ALLOW: recipient has been notified for this alarm in the past (no status change will be sent from now)"
+        return 0
+      fi
+      ;;
+
+    *)
+      # "critical" modifier set, send notification if tracking file exists
+      if [ "${mod_critical}" == "1" ] && [ -f "${tracking_file}" ]; then
+        debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: ALLOW: recipient has been notified for this alarm in the past (will still receive next status change)"
+        return 0
+      fi
+      ;;
   esac
 
-  debug "SEVERITY FILTERING for ${x} VIA ${method}: BLOCK: recipient should not receive this notification"
+  debug "SEVERITY FILTERING for ${recipient_arg} VIA ${method}: BLOCK: recipient should not receive this notification"
   return 1
 }
 
@@ -579,9 +642,6 @@ filter_recipient_by_criticality() {
 # check irc
 [ -z "${IRC_NETWORK}" ] && SEND_IRC="NO"
 
-# check hangouts
-[ ${#HANGOUTS_WEBHOOK_URI[@]} -eq 0 ] && SEND_HANGOUTS="NO"
-
 # check fleep
 #shellcheck disable=SC2153
 { [ -z "${FLEEP_SERVER}" ] || [ -z "${FLEEP_SENDER}" ]; } && SEND_FLEEP="NO"
@@ -602,8 +662,8 @@ filter_recipient_by_criticality() {
 # check gotify
 { [ -z "${GOTIFY_APP_TOKEN}" ] || [ -z "${GOTIFY_APP_URL}" ]; } && SEND_GOTIFY="NO"
 
-# check stackpulse
-[ -z "${STACKPULSE_WEBHOOK}" ] && SEND_STACKPULSE="NO"
+# check ntfy
+[ -z "${DEFAULT_RECIPIENT_NTFY}" ] && SEND_NTFY="NO"
 
 # check msteams
 [ -z "${MSTEAMS_WEBHOOK_URL}" ] && SEND_MSTEAMS="NO"
@@ -633,14 +693,13 @@ if [ "${SEND_PUSHOVER}" = "YES" ] ||
   [ "${SEND_KAFKA}" = "YES" ] ||
   [ "${SEND_FLEEP}" = "YES" ] ||
   [ "${SEND_PROWL}" = "YES" ] ||
-  [ "${SEND_HANGOUTS}" = "YES" ] ||
   [ "${SEND_MATRIX}" = "YES" ] ||
   [ "${SEND_CUSTOM}" = "YES" ] ||
   [ "${SEND_MSTEAMS}" = "YES" ] ||
   [ "${SEND_DYNATRACE}" = "YES" ] ||
-  [ "${SEND_STACKPULSE}" = "YES" ] ||
   [ "${SEND_OPSGENIE}" = "YES" ] ||
-  [ "${SEND_GOTIFY}" = "YES" ]; then
+  [ "${SEND_GOTIFY}" = "YES" ] ||
+  [ "${SEND_NTFY}" = "YES" ]; then
   # if we need curl, check for the curl command
   if [ -z "${curl}" ]; then
     curl="$(command -v curl 2>/dev/null)"
@@ -664,13 +723,12 @@ if [ "${SEND_PUSHOVER}" = "YES" ] ||
     SEND_KAFKA="NO"
     SEND_FLEEP="NO"
     SEND_PROWL="NO"
-    SEND_HANGOUTS="NO"
     SEND_MATRIX="NO"
     SEND_CUSTOM="NO"
     SEND_DYNATRACE="NO"
-    SEND_STACKPULSE="NO"
     SEND_OPSGENIE="NO"
     SEND_GOTIFY="NO"
+    SEND_NTFY="NO"
   fi
 fi
 
@@ -706,6 +764,15 @@ if [ "${SEND_AWSSNS}" = "YES" ] && [ -z "${aws}" ]; then
   if [ -z "${aws}" ]; then
     debug "Cannot find aws command in the system path.  Disabling Amazon SNS notifications."
     SEND_AWSSNS="NO"
+  fi
+fi
+
+# if we need nc, check for the nc command
+if [ "${SEND_IRC}" = "YES" ] && [ -z "${nc}" ]; then
+  nc="$(command -v nc 2>/dev/null)"
+  if [ -z "${nc}" ]; then
+    debug "Cannot find nc command in the system path.  Disabling IRC notifications."
+    SEND_IRC="NO"
   fi
 fi
 
@@ -803,15 +870,14 @@ for method in "${SEND_EMAIL}" \
   "${SEND_MATRIX}" \
   "${SEND_CUSTOM}" \
   "${SEND_IRC}" \
-  "${SEND_HANGOUTS}" \
   "${SEND_AWSSNS}" \
   "${SEND_SYSLOG}" \
   "${SEND_SMS}" \
   "${SEND_MSTEAMS}" \
   "${SEND_DYNATRACE}" \
-  "${SEND_STACKPULSE}" \
   "${SEND_OPSGENIE}" \
-  "${SEND_GOTIFY}" ; do
+  "${SEND_GOTIFY}" \
+  "${SEND_NTFY}" ; do
 
   if [ "${method}" == "YES" ]; then
     proceed=1
@@ -1066,7 +1132,7 @@ send_kafka() {
   local httpcode sent=0
   if [ "${SEND_KAFKA}" = "YES" ]; then
     httpcode=$(docurl -X POST \
-      --data "{host_ip:\"${KAFKA_SENDER_IP}\",when:${when},name:\"${name}\",chart:\"${chart}\",family:\"${family}\",status:\"${status}\",old_status:\"${old_status}\",value:${value},old_value:${old_value},duration:${duration},non_clear_duration:${non_clear_duration},units:\"${units}\",info:\"${info}\"}" \
+      --data "{host_ip:\"${KAFKA_SENDER_IP}\",when:${when},name:\"${name}\",chart:\"${chart}\",status:\"${status}\",old_status:\"${old_status}\",value:${value},old_value:${old_value},duration:${duration},non_clear_duration:${non_clear_duration},units:\"${units}\",info:\"${info}\"}" \
       "${KAFKA_URL}")
 
     if [ "${httpcode}" = "204" ]; then
@@ -1101,7 +1167,7 @@ send_pd() {
       current_time=$(date -r ${when} +'%Y-%m-%dT%H:%M:%S.000')
     fi
     for PD_SERVICE_KEY in ${recipients}; do
-      d="${status} ${name} = ${value_string} - ${host}, ${family}"
+      d="${status} ${name} = ${value_string} - ${host}"
       if [ ${USE_PD_VERSION} = "2" ]; then
         payload="$(
           cat <<EOF
@@ -1111,7 +1177,6 @@ send_pd() {
                   "source" : "${args_host}",
                   "severity" : "${severity}",
                   "timestamp" : "${current_time}",
-                  "group" : "${family}",
                   "class" : "${chart}",
                   "custom_details": {
                     "value_w_units": "${value_string}",
@@ -1121,7 +1186,6 @@ send_pd() {
                     "alarm_id" : "${alarm_id}",
                     "name" : "${name}",
                     "chart" : "${chart}",
-                    "family" : "${family}",
                     "status" : "${status}",
                     "old_status" : "${old_status}",
                     "value" : "${value}",
@@ -1156,7 +1220,6 @@ EOF
                 "alarm_id" : "${alarm_id}",
                 "name" : "${name}",
                 "chart" : "${chart}",
-                "family" : "${family}",
                 "status" : "${status}",
                 "old_status" : "${old_status}",
                 "value" : "${value}",
@@ -1404,7 +1467,7 @@ send_msteams() {
             "@type": "MessageCard",
             "themeColor": "${color}",
             "title": "$icon Alert ${status} from netdata for ${host}",
-            "text": "${host} ${status_message}, ${chart} (_${family}_), *${alarm}*",
+            "text": "${host} ${status_message}, ${chart}, *${alarm}*",
             "potentialAction": [
             {
                 "@type": "OpenUri",
@@ -1469,10 +1532,10 @@ send_slack() {
             $ch
             "username": "netdata on ${host}",
             "icon_url": "${images_base_url}/images/banner-icon-144x144.png",
-            "text": "${host} ${status_message}, \`${chart}\` (_${family}_), *${alarm}*",
+            "text": "${host} ${status_message}, \`${chart}\`, *${alarm}*",
             "attachments": [
                 {
-                    "fallback": "${alarm} - ${chart} (${family}) - ${info}",
+                    "fallback": "${alarm} - ${chart} - ${info}",
                     "color": "${color}",
                     "title": "${alarm}",
                     "title_link": "${goto_url}",
@@ -1480,10 +1543,7 @@ send_slack() {
                     "fields": [
                         {
                             "title": "${chart}",
-                            "short": true
-                        },
-                        {
-                            "title": "${family}",
+                            "value": "chart",
                             "short": true
                         }
                     ],
@@ -1532,7 +1592,7 @@ send_rocketchat() {
             "channel": "#${channel}",
             "alias": "netdata on ${host}",
             "avatar": "${images_base_url}/images/banner-icon-144x144.png",
-            "text": "${host} ${status_message}, \`${chart}\` (_${family}_), *${alarm}*",
+            "text": "${host} ${status_message}, \`${chart}\`, *${alarm}*",
             "attachments": [
                 {
                     "color": "${color}",
@@ -1544,11 +1604,6 @@ send_rocketchat() {
                             "title": "${chart}",
                             "short": true,
                             "value": "chart"
-                        },
-                        {
-                            "title": "${family}",
-                            "short": true,
-                            "value": "family"
                         }
                     ],
                     "thumb_url": "${image}",
@@ -1592,7 +1647,7 @@ send_alerta() {
     resource=$chart
     event=$name
   else
-    resource="${host}:${family}"
+    resource="${host}"
     event="${chart}.${name}"
   fi
 
@@ -1613,7 +1668,6 @@ send_alerta() {
                 "roles": "${roles}",
                 "name": "${name}",
                 "chart": "${chart}",
-                "family": "${family}",
                 "source": "${src}",
                 "moreInfo": "<a href=\"${goto_url}\">View Netdata</a>"
             },
@@ -1670,7 +1724,7 @@ send_flock() {
             \"timestamp\": \"${when}\",
             \"attachments\": [
                 {
-                    \"description\": \"${chart} (${family}) - ${info}\",
+                    \"description\": \"${chart} - ${info}\",
                     \"color\": \"${color}\",
                     \"title\": \"${alarm}\",
                     \"url\": \"${goto_url}\",
@@ -1722,7 +1776,7 @@ send_discord() {
         {
             "channel": "#${channel}",
             "username": "${username}",
-            "text": "${host} ${status_message}, \`${chart}\` (_${family}_), *${alarm}*",
+            "text": "${host} ${status_message}, \`${chart}\`, *${alarm}*",
             "icon_url": "${images_base_url}/images/banner-icon-144x144.png",
             "attachments": [
                 {
@@ -1732,8 +1786,7 @@ send_discord() {
                     "text": "${info}",
                     "fields": [
                         {
-                            "title": "${chart}",
-                            "value": "${family}"
+                            "title": "${chart}"
                         }
                     ],
                     "thumb_url": "${image}",
@@ -1766,7 +1819,7 @@ EOF
 send_fleep() {
   local httpcode sent=0 webhooks="${1}" data message
   if [ "${SEND_FLEEP}" = "YES" ]; then
-    message="${host} ${status_message}, \`${chart}\` (${family}), *${alarm}*\\n${info}"
+    message="${host} ${status_message}, \`${chart}\`, *${alarm}*\\n${info}"
 
     for hook in ${webhooks}; do
       data="{ "
@@ -1796,7 +1849,7 @@ send_fleep() {
 send_prowl() {
   local httpcode sent=0 data message keys prio=0 alarm_url event
   if [ "${SEND_PROWL}" = "YES" ]; then
-    message="$(urlencode "${host} ${status_message}, \`${chart}\` (${family}), *${alarm}*\\n${info}")"
+    message="$(urlencode "${host} ${status_message}, \`${chart}\`, *${alarm}*\\n${info}")"
     message="description=${message}"
     keys="$(urlencode "$(echo "${1}" | tr ' ' ,)")"
     keys="apikey=${keys}"
@@ -1851,7 +1904,7 @@ send_irc() {
     SNDMESSAGE="${MESSAGE//$'\n'/", "}"
     for CHANNEL in ${CHANNELS}; do
       error=0
-      send_alarm=$(echo -e "USER ${NICKNAME} guest ${REALNAME} ${SERVERNAME}\\nNICK ${NICKNAME}\\nJOIN ${CHANNEL}\\nPRIVMSG ${CHANNEL} :${SNDMESSAGE}\\nQUIT\\n" \  | nc "${NETWORK}" "${PORT}")
+      send_alarm=$(echo -e "USER ${NICKNAME} guest ${REALNAME} ${SERVERNAME}\\nNICK ${NICKNAME}\\nJOIN ${CHANNEL}\\nPRIVMSG ${CHANNEL} :${SNDMESSAGE}\\nQUIT\\n" \  | ${nc} "${NETWORK}" "${PORT}")
       reply_codes=$(echo "${send_alarm}" | cut -d ' ' -f 2 | grep -o '[0-9]*')
       for code in ${reply_codes}; do
         if [ "${code}" -ge 400 ] && [ "${code}" -le 599 ]; then
@@ -1926,8 +1979,8 @@ send_matrix() {
   {
     "msgtype": "m.notice",
     "format": "org.matrix.custom.html",
-      "formatted_body": "${emoji} ${host} ${status_message} - <b>${name//_/ }</b><br>${chart} (${family})<br><a href=\"${goto_url}\">${alarm}</a><br><i>${info}</i>",
-      "body": "${emoji} ${host} ${status_message} - ${name//_/ } ${chart} (${family}) ${goto_url} ${alarm} ${info}"
+      "formatted_body": "${emoji} ${host} ${status_message} - <b>${name//_/ }</b><br>${chart}<br><a href=\"${goto_url}\">${alarm}</a><br><i>${info}</i>",
+      "body": "${emoji} ${host} ${status_message} - ${name//_/ } ${chart} ${goto_url} ${alarm} ${info}"
   }
 EOF
     )"
@@ -2025,7 +2078,7 @@ send_sms() {
   local recipients="${1}" errcode errmessage sent=0
 
     # Human readable SMS
-    local msg="${host} ${status_message}: ${chart} (${family}), ${alarm}"
+    local msg="${host} ${status_message}: ${chart}, ${alarm}"
 
     # limit it to 160 characters
     msg="${msg:0:160}"
@@ -2045,118 +2098,6 @@ send_sms() {
 
     [ ${sent} -gt 0 ] && return 0
   fi
-
-  return 1
-}
-
-# -----------------------------------------------------------------------------
-# hangouts sender
-
-send_hangouts() {
-  local rooms="${1}" httpcode sent=0 room color payload webhook thread
-
-  [ "${SEND_HANGOUTS}" != "YES" ] && return 1
-
-  case "${status}" in
-  WARNING) color="#ffa700" ;;
-  CRITICAL) color="#d62d20" ;;
-  CLEAR) color="#008744" ;;
-  *) color="#777777" ;;
-  esac
-
-  for room in ${rooms}; do
-    if [ -z "${HANGOUTS_WEBHOOK_URI[$room]}" ] ; then
-      info "Can't send Hangouts notification for: ${host} ${chart}.${name} to room ${room}. HANGOUTS_WEBHOOK_URI[$room] not defined"
-    else
-      if [ -n "${HANGOUTS_WEBHOOK_THREAD[$room]}" ]; then
-        thread="\"name\" : \"${HANGOUTS_WEBHOOK_THREAD[$room]}\""
-      fi
-      webhook="${HANGOUTS_WEBHOOK_URI[$room]}"
-      payload="$(
-        cat <<EOF
-        {
-          "cards": [
-            {
-              "header": {
-                "title": "Netdata on ${host}",
-                "imageUrl": "${images_base_url}/images/banner-icon-144x144.png",
-                "imageStyle": "IMAGE"
-              },
-              "sections": [
-                {
-                  "header": "<b>${host}</b>",
-                  "widgets": [
-                    {
-                      "keyValue": {
-                        "topLabel": "Status Message",
-                        "content": "<b>${status_message}</b>",
-                        "contentMultiline": "true",
-                        "iconUrl": "${image}",
-                        "onClick": {
-                          "openLink": {
-                            "url": "${goto_url}"
-                          }
-                        }
-                      }
-                    },
-                    {
-                      "keyValue": {
-                        "topLabel": "${chart} | ${family}",
-                        "content": "<font color=${color}>${alarm}</font>",
-                        "contentMultiline": "true"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "widgets": [
-                    {
-                      "textParagraph": {
-                      "text": "<font color=\"#0057e7\">@ ${date}\n<b>${info}</b></font>"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "widgets": [
-                    {
-                      "buttons": [
-                        {
-                          "textButton": {
-                            "text": "Go to ${host}",
-                            "onClick": {
-                              "openLink": {
-                                "url": "${goto_url}"
-                              }
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          ],
-          "thread": {
-            $thread
-          }
-        }
-EOF
-        )"
-
-      httpcode=$(docurl -H "Content-Type: application/json" -X POST -d "${payload}" "${webhook}")
-
-      if [ "${httpcode}" = "200" ]; then
-        info "sent hangouts notification for: ${host} ${chart}.${name} is ${status} to '${room}'"
-        sent=$((sent + 1))
-      else
-        error "failed to send hangouts notification for: ${host} ${chart}.${name} is ${status} to '${room}', with HTTP response status code ${httpcode}."
-      fi
-    fi
-  done
-
-  [ ${sent} -gt 0 ] && return 0
 
   return 1
 }
@@ -2210,62 +2151,25 @@ EOF
   fi
 }
 
-
-# -----------------------------------------------------------------------------
-# Stackpulse sender
-
-send_stackpulse() {
-  local payload httpcode oldv currv
-  [ "${SEND_STACKPULSE}" != "YES" ] && return 1
-
-  # We are sending null when values are nan to avoid errors while JSON message is parsed
-  [ "${old_value}" != "nan" ] && oldv="${old_value}" ||  oldv="null"
-  [ "${value}" != "nan" ] && currv="${value}" || currv="null"
-
-  payload=$(cat <<EOF
-  {
-    "Node" : "${host}",
-    "Chart" : "${chart}",
-    "OldValue" : ${oldv},
-    "Value" : ${currv},
-    "Units" : "${units}",
-    "OldStatus" : "${old_status}",
-    "Status" : "${status}",
-    "Alarm" : "${name}",
-    "Date": ${when},
-    "Duration": ${duration},
-    "NonClearDuration": ${non_clear_duration},
-    "Description" : "${status_message}, ${info}",
-    "CalcExpression" : "${calc_expression}",
-    "CalcParamValues" : "${calc_param_values}",
-    "TotalWarnings" : "${total_warnings}",
-    "TotalCritical" : "${total_critical}",
-    "ID" : ${alarm_id}
-  }
-EOF
-)
-
-  httpcode=$(docurl -X POST -H "Content-Type: application/json" -d "${payload}" ${STACKPULSE_WEBHOOK})
-  if [ "${httpcode}" = "200" ]; then
-    info "sent stackpulse notification for: ${host} ${chart}.${name} is ${status}"
-  else
-    error "failed to send stackpulse notification for: ${host} ${chart}.${name} is ${status}, with HTTP response status code ${httpcode}."
-    return 1
-  fi
-
-  return 0
-}
 # -----------------------------------------------------------------------------
 # Opsgenie sender
 
 send_opsgenie() {
-  local payload httpcode oldv currv
+  local payload httpcode oldv currv priority
   [ "${SEND_OPSGENIE}" != "YES" ] && return 1
 
   if [ -z "${OPSGENIE_API_KEY}" ] ; then
     info "Can't send Opsgenie notification, because OPSGENIE_API_KEY is not defined"
     return 1
   fi
+
+  # Priority for OpsGenie alert (https://support.atlassian.com/opsgenie/docs/update-alert-priority-level/)
+  case "${status}" in
+  CRITICAL) priority="P1" ;; # Critical is P1
+  WARNING) priority="P3" ;; # Warning is P3
+  CLEAR) priority="P5" ;; # Clear is P5
+  *) priority="P3" ;; # OpsGenie's default alert level is P3
+  esac
 
   # We are sending null when values are nan to avoid errors while JSON message is parsed
   [ "${old_value}" != "nan" ] && oldv="${old_value}" ||  oldv="null"
@@ -2280,7 +2184,7 @@ send_opsgenie() {
     "chart" : "${chart}",
     "when": ${when},
     "name" : "${name}",
-    "family" : "${family}",
+    "priority" : "${priority}",
     "status" : "${status}",
     "old_status" : "${old_status}",
     "value" : ${currv},
@@ -2349,6 +2253,64 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# ntfy sender
+
+send_ntfy() {
+  local httpcode priority recipients=${1} sent=0 msg
+
+  [ "${SEND_NTFY}" != "YES" ] && return 1
+
+  case "${status}" in
+    WARNING) emoji="warning" ;;
+    CRITICAL) emoji="red_circle" ;;
+    CLEAR) emoji="white_check_mark" ;;
+    *) emoji="white_circle" ;;
+  esac
+
+  case ${status} in
+    WARNING) priority="high";;
+    CRITICAL) priority="urgent";;
+    *) priority="default" ;;
+  esac
+
+  # Adding ntfy header generation logic
+  # Heavily inspired by https://github.com/nickexyz/ntfy-shellscripts/blob/main/sabnzbd.sh
+  tmp_header=""
+  if [[ -n "${NTFY_USERNAME}" ]] && [[ -n "${NTFY_PASSWORD}" ]]; then
+    ntfy_base64=$( echo -n "$NTFY_USERNAME:$NTFY_PASSWORD" | base64 )
+    tmp_header="Authorization: Basic ${ntfy_base64}"
+  elif [ -n "${NTFY_ACCESS_TOKEN}" ]; then
+    tmp_header="Authorization: Bearer ${NTFY_ACCESS_TOKEN}"
+  fi
+  ntfy_auth_header=()
+  if [ -n "${tmp_header}" ]; then
+    ntfy_auth_header=("-H" "${tmp_header}")
+  fi
+  for recipient in ${recipients}; do
+    msg="${host} ${status_message}: ${alarm} - ${info}"
+    httpcode=$(docurl -X POST \
+                      "${ntfy_auth_header[@]}" \
+                      -H "Icon: https://raw.githubusercontent.com/netdata/netdata/master/web/gui/dashboard/images/favicon-196x196.png" \
+                      -H "Title: ${host}: ${name//_/ }" \
+                      -H "Tags: ${emoji}" \
+                      -H "Priority: ${priority}" \
+                      -H "Actions: view, View node, ${goto_url}, clear=true;" \
+                      -d "${msg}" \
+                      ${recipient})
+    if [ "${httpcode}" == "200" ]; then
+      info "sent ntfy notification for: ${host} ${chart}.${name} is ${status} to '${recipient}'"
+      sent=$((sent + 1))
+    else
+      error "failed to send ntfy notification for: ${host} ${chart}.${name} is ${status} to '${recipient}', with HTTP response status code ${httpcode}."
+    fi
+  done
+
+  [ ${sent} -gt 0 ] && return 0
+
+  return 1
+}
+
+# -----------------------------------------------------------------------------
 # prepare the content of the notification
 
 # the url to send the user on click
@@ -2356,38 +2318,22 @@ urlencode "${args_host}" >/dev/null
 url_host="${REPLY}"
 urlencode "${chart}" >/dev/null
 url_chart="${REPLY}"
-urlencode "${family}" >/dev/null
-url_family="${REPLY}"
 urlencode "${name}" >/dev/null
 url_name="${REPLY}"
 urlencode "${value_string}" >/dev/null
 url_value_string="${REPLY}"
 
-redirect_params="host=${url_host}&chart=${url_chart}&family=${url_family}&alarm=${url_name}&alarm_unique_id=${unique_id}&alarm_id=${alarm_id}&alarm_event_id=${event_id}&alarm_when=${when}&alarm_status=${status}&alarm_chart=${chart}&alarm_value=${url_value_string}"
-GOTOCLOUD=0
+redirect_params="host=${url_host}&chart=${url_chart}&alarm=${url_name}&alarm_unique_id=${unique_id}&alarm_id=${alarm_id}&alarm_event_id=${event_id}&alarm_when=${when}&alarm_status=${status}&alarm_chart=${chart}&alarm_value=${url_value_string}"
 
-if [ "${NETDATA_REGISTRY_URL}" == "https://registry.my-netdata.io" ]; then
-  if [ -z "${NETDATA_REGISTRY_UNIQUE_ID}" ]; then
-    if [ -f "@registrydir_POST@/netdata.public.unique.id" ]; then
-      NETDATA_REGISTRY_UNIQUE_ID="$(cat "@registrydir_POST@/netdata.public.unique.id")"
-    fi
-  fi
-  if [ -n "${NETDATA_REGISTRY_UNIQUE_ID}" ]; then
-    GOTOCLOUD=1
-  fi
-fi
-
-if [ ${GOTOCLOUD} -eq 0 ]; then
-  goto_url="${NETDATA_REGISTRY_URL}/goto-host-from-alarm.html?${redirect_params}"
-else
-    # Temporarily disable alarm redirection, as the cloud endpoint no longer exists. This functionality will be restored after discussion on #9487. For now, just lead to netdata.cloud
-    # Re-allow alarm redirection, for alarms 2.0, new template
-  if [ -z "${child_machine_guid}" ]; then
-      goto_url="${NETDATA_REGISTRY_CLOUD_BASE_URL}/alarms/redirect?agentId=${NETDATA_REGISTRY_UNIQUE_ID}&${redirect_params}"
+if [ -z "${NETDATA_REGISTRY_UNIQUE_ID}" ]; then
+  if [ -f "@registrydir_POST@/netdata.public.unique.id" ]; then
+    NETDATA_REGISTRY_UNIQUE_ID="$(cat "@registrydir_POST@/netdata.public.unique.id")"
   else
-      goto_url="${NETDATA_REGISTRY_CLOUD_BASE_URL}/alarms/redirect?agentId=${NETDATA_REGISTRY_UNIQUE_ID}&childId=${child_machine_guid}&${redirect_params}"
+    error "failed to identify this agent via its NETDATA_REGISTRY_UNIQUE_ID."
   fi
 fi
+
+goto_url="${NETDATA_REGISTRY_URL}/registry-alert-redirect.html?agent_machine_guid=${NETDATA_REGISTRY_UNIQUE_ID}&host_machine_guid=${child_machine_guid}&transition_id=${transition_id}&${redirect_params}"
 
 # the severity of the alarm
 severity="${status}"
@@ -2406,7 +2352,7 @@ status_message="status unknown"
 color="grey"
 
 # the alarm value
-alarm="${name//_/ } = ${value_string}"
+alarm="${summary//_/ } = ${value_string}"
 
 # the image of the alarm
 image="${images_base_url}/images/banner-icon-144x144.png"
@@ -2418,7 +2364,7 @@ status_email_subject="${status}"
 case "${status}" in
 CRITICAL)
   image="${images_base_url}/images/alert-128-red.png"
-  alarm_badge="${NETDATA_REGISTRY_CLOUD_BASE_URL}/static/email/img/label_critical.png"
+  alarm_badge="https://app.netdata.cloud/static/email/img/label_critical.png"
   status_message="is critical"
   status_email_subject="Critical"
   color="#ca414b"
@@ -2431,7 +2377,7 @@ CRITICAL)
 
 WARNING)
   image="${images_base_url}/images/alert-128-orange.png"
-  alarm_badge="${NETDATA_REGISTRY_CLOUD_BASE_URL}/static/email/img/label_warning.png"
+  alarm_badge="https://app.netdata.cloud/static/email/img/label_warning.png"
   status_message="needs attention"
   status_email_subject="Warning"
   color="#ffc107"
@@ -2444,7 +2390,7 @@ WARNING)
 
 CLEAR)
   image="${images_base_url}/images/check-mark-2-128-green.png"
-  alarm_badge="${NETDATA_REGISTRY_CLOUD_BASE_URL}/static/email/img/label_recovered.png"
+  alarm_badge="https://app.netdata.cloud/static/email/img/label_recovered.png"
   status_message="recovered"
   status_email_subject="Clear"
   color="#77ca6d"
@@ -2457,7 +2403,7 @@ CLEAR)
 esac
 
 # the html email subject
-html_email_subject="${status_email_subject}, ${name} = ${value_string}, on ${host}"
+html_email_subject="${status_email_subject}, ${summary} = ${value_string}, on ${host}"
 
 if [ "${status}" = "CLEAR" ]; then
   severity="Recovered from ${old_status}"
@@ -2468,8 +2414,8 @@ if [ "${status}" = "CLEAR" ]; then
 
   # don't show the value when the status is CLEAR
   # for certain alarms, this value might not have any meaning
-  alarm="${name//_/ } ${raised_for}"
-  html_email_subject="${status_email_subject}, ${name} ${raised_for}, on ${host}"
+  alarm="${summary//_/ } ${raised_for}"
+  html_email_subject="${status_email_subject}, ${summary} ${raised_for}, on ${host}"
 
 elif { [ "${old_status}" = "WARNING" ] && [ "${status}" = "CRITICAL" ]; }; then
   severity="Escalated to ${status}"
@@ -2504,15 +2450,6 @@ raised_for_html=
 
 send_slack "${SLACK_WEBHOOK_URL}" "${to_slack}"
 SENT_SLACK=$?
-
-# -----------------------------------------------------------------------------
-# send the hangouts notification
-
-# hangouts aggregates posts from the same room
-# so we use "${host} ${status}" as the room, to make them diff
-
-send_hangouts "${to_hangouts}"
-SENT_HANGOUTS=$?
 
 # -----------------------------------------------------------------------------
 # send the Microsoft Teams notification
@@ -2565,7 +2502,6 @@ SENT_DISCORD=$?
 send_pushover "${PUSHOVER_APP_TOKEN}" "${to_pushover}" "${when}" "${goto_url}" "${status}" "${host} ${status_message} - ${name//_/ } - ${chart}" "
 <font color=\"${color}\"><b>${alarm}</b></font>${info_html}<br/>&nbsp;
 <small><b>${chart}</b><br/>Chart<br/>&nbsp;</small>
-<small><b>${family}</b><br/>Family<br/>&nbsp;</small>
 <small><b>${severity}</b><br/>Severity<br/>&nbsp;</small>
 <small><b>${date}${raised_for_html}</b><br/>Time<br/>&nbsp;</small>
 <a href=\"${goto_url}\">View Netdata</a><br/>&nbsp;
@@ -2580,7 +2516,6 @@ SENT_PUSHOVER=$?
 send_pushbullet "${PUSHBULLET_ACCESS_TOKEN}" "${PUSHBULLET_SOURCE_DEVICE}" "${to_pushbullet}" "${goto_url}" "${host} ${status_message} - ${name//_/ } - ${chart}" "${alarm}\\n
 Severity: ${severity}\\n
 Chart: ${chart}\\n
-Family: ${family}\\n
 ${date}\\n
 The source of this alarm is line ${src}"
 
@@ -2592,7 +2527,6 @@ SENT_PUSHBULLET=$?
 send_twilio "${TWILIO_ACCOUNT_SID}" "${TWILIO_ACCOUNT_TOKEN}" "${TWILIO_NUMBER}" "${to_twilio}" "${host} ${status_message} - ${name//_/ } - ${chart}" "${alarm}
 Severity: ${severity}
 Chart: ${chart}
-Family: ${family}
 ${info}"
 
 SENT_TWILIO=$?
@@ -2603,7 +2537,6 @@ SENT_TWILIO=$?
 send_messagebird "${MESSAGEBIRD_ACCESS_KEY}" "${MESSAGEBIRD_NUMBER}" "${to_messagebird}" "${host} ${status_message} - ${name//_/ } - ${chart}" "${alarm}
 Severity: ${severity}
 Chart: ${chart}
-Family: ${family}
 ${info}"
 
 SENT_MESSAGEBIRD=$?
@@ -2614,7 +2547,6 @@ SENT_MESSAGEBIRD=$?
 send_kavenegar "${KAVENEGAR_API_KEY}" "${KAVENEGAR_SENDER}" "${to_kavenegar}" "${host} ${status_message} - ${name//_/ } - ${chart}" "${alarm}
 Severity: ${severity}
 Chart: ${chart}
-Family: ${family}
 ${info}"
 
 SENT_KAVENEGAR=$?
@@ -2624,7 +2556,7 @@ SENT_KAVENEGAR=$?
 
 # https://core.telegram.org/bots/api#formatting-options
 send_telegram "${TELEGRAM_BOT_TOKEN}" "${to_telegram}" "${host} ${status_message} - <b>${name//_/ }</b>
-${chart} (${family})
+${chart}
 <a href=\"${goto_url}\">${alarm}</a>
 <i>${info}</i>"
 
@@ -2660,7 +2592,6 @@ SENT_PROWL=$?
 send_irc "${IRC_NICKNAME}" "${IRC_REALNAME}" "${to_irc}" "${IRC_NETWORK}" "${IRC_PORT}" "${host}" "${host} ${status_message} - ${name//_/ } - ${chart} ----- ${alarm}
 Severity: ${severity}
 Chart: ${chart}
-Family: ${family}
 ${info}"
 
 SENT_IRC=$?
@@ -2695,7 +2626,7 @@ SENT_CUSTOM=$?
 send_hipchat "${HIPCHAT_AUTH_TOKEN}" "${to_hipchat}" " \
 ${host} ${status_message}<br/> \
 <b>${alarm}</b> ${info_html}<br/> \
-<b>${chart}</b> (family <b>${family}</b>)<br/> \
+<b>${chart}</b><br/> \
 <b>${date}${raised_for_html}</b><br/> \
 <a href=\\\"${goto_url}\\\">View netdata dashboard</a> \
 (source of alarm ${src}) \
@@ -2738,7 +2669,6 @@ ${alarm} ${info}
 ${raised_for}
 
 Chart   : ${chart}
-Family  : ${family}
 Severity: ${severity}
 URL     : ${goto_url}
 Source  : ${src}
@@ -2762,7 +2692,6 @@ ${email_thread_headers}
 X-Netdata-Severity: ${status,,}
 X-Netdata-Alert-Name: $name
 X-Netdata-Chart: $chart
-X-Netdata-Family: $family
 X-Netdata-Classification: $classification
 X-Netdata-Host: $host
 X-Netdata-Role: $roles
@@ -3059,7 +2988,7 @@ Content-Transfer-Encoding: 8bit
                       <tbody>
                       <tr>
                         <td align="left" style="font-size:0px;padding:10px 25px;padding-top:15px;word-break:break-word;">
-                          <div style="font-family:Open Sans, sans-serif;font-size:20px;font-weight:700;line-height:1;text-align:left;color:#35414A;">${name}</div>
+                          <div style="font-family:Open Sans, sans-serif;font-size:20px;font-weight:700;line-height:1;text-align:left;color:#35414A;">${summary}</div>
                         </td>
                       </tr>
                       </tbody>
@@ -3217,14 +3146,14 @@ Content-Transfer-Encoding: 8bit
               <tbody>
               <tr>
                 <td align="left" style="font-size:0px;padding:10px 25px;padding-bottom:6px;word-break:break-word;">
-                  <div style="font-family:Open Sans, sans-serif;font-size:18px;line-height:1;text-align:left;color:#35414A;">Chart:
-                    <span style="font-weight:700; font-size:20px">${chart}</span></div>
+                  <div style="font-family:Open Sans, sans-serif;font-size:18px;line-height:1;text-align:left;color:#35414A;">Alert:
+                    <span style="font-weight:700; font-size:20px">${name}</span></div>
                 </td>
               </tr>
               <tr>
                 <td align="left" style="font-size:0px;padding:10px 25px;padding-top:0;word-break:break-word;">
-                  <div style="font-family:Open Sans, sans-serif;font-size:18px;line-height:1;text-align:left;color:#35414A;">Family:
-                    <span style="font-weight:700; font-size:20px">${family}</span></div>
+                  <div style="font-family:Open Sans, sans-serif;font-size:18px;line-height:1;text-align:left;color:#35414A;">Chart:
+                    <span style="font-weight:700; font-size:20px">${chart}</span></div>
                 </td>
               </tr>
               <tr>
@@ -3485,7 +3414,7 @@ Content-Transfer-Encoding: 8bit
                     <tbody>
                     <tr>
                       <td align="left" style="font-size:0px;padding:10px 25px;padding-top:0;padding-bottom:0;word-break:break-word;">
-                        <div style="font-family:Open Sans, sans-serif;font-size:13px;line-height:1;text-align:center;color:#35414A;">© Netdata 2021 - The real-time performance and health monitoring</div>
+                        <div style="font-family:Open Sans, sans-serif;font-size:13px;line-height:1;text-align:center;color:#35414A;">© Netdata $(date +'%Y') - The real-time performance and health monitoring</div>
                       </td>
                     </tr>
                     </tbody>
@@ -3516,7 +3445,6 @@ ${email_thread_headers}
 X-Netdata-Severity: ${status,,}
 X-Netdata-Alert-Name: $name
 X-Netdata-Chart: $chart
-X-Netdata-Family: $family
 X-Netdata-Classification: $classification
 X-Netdata-Host: $host
 X-Netdata-Role: $roles
@@ -3540,11 +3468,6 @@ send_dynatrace "${host}" "${chart}" "${name}"  "${status}"
 SENT_DYNATRACE=$?
 
 # -----------------------------------------------------------------------------
-# send the EVENT to Stackpulse
-send_stackpulse
-SENT_STACKPULSE=$?
-
-# -----------------------------------------------------------------------------
 # send messages to Opsgenie
 send_opsgenie
 SENT_OPSGENIE=$?
@@ -3555,12 +3478,16 @@ send_gotify
 SENT_GOTIFY=$?
 
 # -----------------------------------------------------------------------------
+# send messages to ntfy
+send_ntfy "${DEFAULT_RECIPIENT_NTFY}"
+SENT_NTFY=$?
+
+# -----------------------------------------------------------------------------
 # let netdata know
 for state in "${SENT_EMAIL}" \
   "${SENT_PUSHOVER}" \
   "${SENT_TELEGRAM}" \
   "${SENT_SLACK}" \
-  "${SENT_HANGOUTS}" \
   "${SENT_ROCKETCHAT}" \
   "${SENT_ALERTA}" \
   "${SENT_FLOCK}" \
@@ -3582,9 +3509,9 @@ for state in "${SENT_EMAIL}" \
   "${SENT_SMS}" \
   "${SENT_MSTEAMS}" \
   "${SENT_DYNATRACE}" \
-  "${SENT_STACKPULSE}" \
   "${SENT_OPSGENIE}" \
-  "${SENT_GOTIFY}"; do
+  "${SENT_GOTIFY}" \
+  "${SENT_NTFY}"; do
   if [ "${state}" -eq 0 ]; then
     # we sent something
     exit 0

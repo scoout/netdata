@@ -228,23 +228,22 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
 
         if(unlikely(!st)) {
             st = rrdset_create_localhost(
-                    "ipv4"
+                    "ip"
                     , "sockstat_sockets"
                     , NULL
                     , "sockets"
                     , NULL
-                    , "IPv4 Sockets Used"
+                    , "Sockets used for all address families"
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
-                    , NETDATA_CHART_PRIO_IPV4_SOCKETS
+                    , NETDATA_CHART_PRIO_IP_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_used = rrddim_add(st, "used", NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_used, (collected_number)sockstat_root.sockets_used);
         rrdset_done(st);
@@ -273,7 +272,7 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
                     , NULL
                     , "tcp"
                     , NULL
-                    , "IPv4 TCP Sockets"
+                    , "TCP Sockets"
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
@@ -287,7 +286,6 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
             rd_timewait = rrddim_add(st, "timewait",  NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat_root.tcp_inuse);
         rrddim_set_by_pointer(st, rd_orphan,   (collected_number)sockstat_root.tcp_orphan);
@@ -312,18 +310,17 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
                     , NULL
                     , "tcp"
                     , NULL
-                    , "IPv4 TCP Sockets Memory"
+                    , "TCP Sockets Memory"
                     , "KiB"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
-                    , NETDATA_CHART_PRIO_IPV4_TCP_MEM
+                    , NETDATA_CHART_PRIO_IPV4_TCP_SOCKETS_MEM
                     , update_every
                     , RRDSET_TYPE_AREA
             );
 
             rd_mem = rrddim_add(st, "mem", NULL, sysconf(_SC_PAGESIZE), 1024, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_mem, (collected_number)sockstat_root.tcp_mem);
         rrdset_done(st);
@@ -350,14 +347,13 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
-                    , NETDATA_CHART_PRIO_IPV4_UDP
+                    , NETDATA_CHART_PRIO_IPV4_UDP_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat_root.udp_inuse);
         rrdset_done(st);
@@ -384,14 +380,13 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
                     , "KiB"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
-                    , NETDATA_CHART_PRIO_IPV4_UDP_MEM
+                    , NETDATA_CHART_PRIO_IPV4_UDP_SOCKETS_MEM
                     , update_every
                     , RRDSET_TYPE_AREA
             );
 
             rd_mem = rrddim_add(st, "mem", NULL, sysconf(_SC_PAGESIZE), 1024, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_mem, (collected_number)sockstat_root.udp_mem);
         rrdset_done(st);
@@ -418,14 +413,13 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
-                    , NETDATA_CHART_PRIO_IPV4_UDPLITE
+                    , NETDATA_CHART_PRIO_IPV4_UDPLITE_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat_root.udplite_inuse);
         rrdset_done(st);
@@ -459,7 +453,6 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat_root.raw_inuse);
         rrdset_done(st);
@@ -486,14 +479,13 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
                     , "fragments"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
-                    , NETDATA_CHART_PRIO_IPV4_FRAGMENTS
+                    , NETDATA_CHART_PRIO_IPV4_FRAGMENTS_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat_root.frag_inuse);
         rrdset_done(st);
@@ -520,14 +512,13 @@ int do_proc_net_sockstat(int update_every, usec_t dt) {
                     , "KiB"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT_NAME
-                    , NETDATA_CHART_PRIO_IPV4_FRAGMENTS_MEM
+                    , NETDATA_CHART_PRIO_IPV4_FRAGMENTS_SOCKETS_MEM
                     , update_every
                     , RRDSET_TYPE_AREA
             );
 
             rd_mem = rrddim_add(st, "mem", NULL, 1, 1024, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_mem, (collected_number)sockstat_root.frag_memory);
         rrdset_done(st);

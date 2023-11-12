@@ -22,7 +22,6 @@ package_tree="
   tar
   curl
   gzip
-  netcat-openbsd
   libuv-dev
   lz4-dev
   openssl-dev
@@ -32,6 +31,7 @@ package_tree="
   util-linux-dev
   libmnl-dev
   json-c-dev
+  yaml-dev
   "
 
 usage() {

@@ -2,6 +2,61 @@
 
 #include "common.h"
 
+static bool cmd_arg_sanitization_test(const char *expected, const char *src, char *dst, size_t dst_size) {
+    bool ok = sanitize_command_argument_string(dst, src, dst_size);
+
+    if (!expected)
+        return ok == false;
+
+    return strcmp(expected, dst) == 0;
+}
+
+bool command_argument_sanitization_tests() {
+    char dst[1024];
+
+    for (size_t i = 0; i != 5; i++)  {
+        const char *expected = i == 4 ? "'\\''" : NULL;
+        if (cmd_arg_sanitization_test(expected, "'", dst, i) == false) {
+            fprintf(stderr, "expected: >>>%s<<<, got: >>>%s<<<\n", expected, dst);
+            return 1;
+        }
+    }
+
+    for (size_t i = 0; i != 9; i++)  {
+        const char *expected = i == 8 ? "'\\'''\\''" : NULL;
+        if (cmd_arg_sanitization_test(expected, "''", dst, i) == false) {
+            fprintf(stderr, "expected: >>>%s<<<, got: >>>%s<<<\n", expected, dst);
+            return 1;
+        }
+    }
+
+    for (size_t i = 0; i != 7; i++)  {
+        const char *expected = i == 6 ? "'\\''a" : NULL;
+        if (cmd_arg_sanitization_test(expected, "'a", dst, i) == false) {
+            fprintf(stderr, "expected: >>>%s<<<, got: >>>%s<<<\n", expected, dst);
+            return 1;
+        }
+    }
+
+    for (size_t i = 0; i != 7; i++)  {
+        const char *expected = i == 6 ? "a'\\''" : NULL;
+        if (cmd_arg_sanitization_test(expected, "a'", dst, i) == false) {
+            fprintf(stderr, "expected: >>>%s<<<, got: >>>%s<<<\n", expected, dst);
+            return 1;
+        }
+    }
+
+    for (size_t i = 0; i != 22; i++)  {
+        const char *expected = i == 21 ? "foo'\\''a'\\'''\\'''\\''b" : NULL;
+        if (cmd_arg_sanitization_test(expected, "--foo'a'''b", dst, i) == false) {
+            fprintf(stderr, "expected: >>>%s<<<, got: >>>%s<<<\n length: %zu\n", expected, dst, strlen(dst));
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static int check_number_printing(void) {
     struct {
         NETDATA_DOUBLE n;
@@ -13,17 +68,36 @@ static int check_number_printing(void) {
             { .n = 0.000000001, .correct = "0" },
             { .n = 99.99999999999999999, .correct = "100" },
             { .n = -99.99999999999999999, .correct = "-100" },
+            { .n = 123.4567899123456789, .correct = "123.4567899" },
             { .n = 123.4567890123456789, .correct = "123.456789" },
+            { .n = 123.4567800123456789, .correct = "123.45678" },
+            { .n = 123.4567000123456789, .correct = "123.4567" },
+            { .n = 123.4560000123456789, .correct = "123.456" },
+            { .n = 123.4500000123456789, .correct = "123.45" },
+            { .n = 123.4000000123456789, .correct = "123.4" },
+            { .n = 123.0000000123456789, .correct = "123" },
+            { .n = 123.0000000923456789, .correct = "123.0000001" },
+            { .n = 4294967295.123456789, .correct = "4294967295.123457" },
+            { .n = 8294967295.123456789, .correct = "8294967295.123457" },
+            { .n = 1.000000000000002e+19, .correct = "1.000000000000001998e+19" },
+            { .n = 9.2233720368547676e+18, .correct = "9.223372036854767584e+18" },
+            { .n = 18446744073709541376.0, .correct = "1.84467440737095424e+19" },
+            { .n = 18446744073709551616.0, .correct = "1.844674407370955136e+19" },
+            { .n = 12318446744073710600192.0, .correct = "1.231844674407371008e+22" },
+            { .n = 1677721499999999885312.0, .correct = "1.677721499999999872e+21" },
+            { .n = -1677721499999999885312.0, .correct = "-1.677721499999999872e+21" },
+            { .n = -1.677721499999999885312e40, .correct = "-1.677721499999999872e+40" },
+            { .n = -16777214999999997337621690403742592008192.0, .correct = "-1.677721499999999616e+40" },
             { .n = 9999.9999999, .correct = "9999.9999999" },
             { .n = -9999.9999999, .correct = "-9999.9999999" },
             { .n = 0, .correct = NULL },
     };
 
-    char netdata[50], system[50];
+    char netdata[512 + 2], system[512 + 2];
     int i, failed = 0;
     for(i = 0; values[i].correct ; i++) {
         print_netdata_double(netdata, values[i].n);
-        snprintfz(system, 49, "%0.12" NETDATA_DOUBLE_MODIFIER, (NETDATA_DOUBLE)values[i].n);
+        snprintfz(system, 512, "%0.12" NETDATA_DOUBLE_MODIFIER, (NETDATA_DOUBLE)values[i].n);
 
         int ok = 1;
         if(strcmp(netdata, values[i].correct) != 0) {
@@ -31,7 +105,18 @@ static int check_number_printing(void) {
             failed++;
         }
 
-        fprintf(stderr, "'%s' (system) printed as '%s' (netdata): %s\n", system, netdata, ok?"OK":"FAILED");
+        NETDATA_DOUBLE parsed_netdata = str2ndd(netdata, NULL);
+        NETDATA_DOUBLE parsed_system = strtondd(netdata, NULL);
+
+        if(parsed_system != parsed_netdata)
+            failed++;
+
+        fprintf(stderr, "[%d]. '%s' (system) printed as '%s' (netdata): PRINT %s, "
+                        "PARSED %0.12" NETDATA_DOUBLE_MODIFIER " (system), %0.12" NETDATA_DOUBLE_MODIFIER " (netdata): %s\n",
+                        i,
+                        system, netdata, ok?"OK":"FAILED",
+                        parsed_system, parsed_netdata,
+                        parsed_netdata == parsed_system ? "OK" : "FAILED");
     }
 
     if(failed) return 1;
@@ -340,9 +425,35 @@ int unit_test_storage() {
 }
 
 int unit_test_str2ld() {
+    is_system_ieee754_double();
+
     char *values[] = {
-            "1.2345678", "-35.6", "0.00123", "23842384234234.2", ".1", "1.2e-10",
-            "hello", "1wrong", "nan", "inf", NULL
+            "1.2345678",
+            "-35.6",
+            "0.00123",
+            "23842384234234.2",
+            ".1",
+            "1.2e-10",
+            "18446744073709551616.0",
+            "18446744073709551616123456789123456789123456789123456789123456789123456789123456789.0",
+            "1.8446744073709551616123456789123456789123456789123456789123456789123456789123456789e+300",
+            "9.",
+            "9.e2",
+            "1.2e",
+            "1.2e+",
+            "1.2e-",
+            "1.2e0",
+            "1.2e-0",
+            "1.2e+0",
+            "-1.2e+1",
+            "-1.2e-1",
+            "1.2e1",
+            "1.2e400",
+            "hello",
+            "1wrong",
+            "nan",
+            "inf",
+            NULL
     };
 
     int i;
@@ -372,7 +483,8 @@ int unit_test_str2ld() {
         }
 
         if(e_mine != e_sys) {
-            fprintf(stderr, "Value '%s' is parsed correctly, but endptr is not right\n", values[i]);
+            fprintf(stderr, "Value '%s' is parsed correctly, but endptr is not right (netdata returned %d, but system returned %d)\n",
+                    values[i], (int)(e_mine - values[i]), (int)(e_sys - values[i]));
             return -1;
         }
 
@@ -384,7 +496,7 @@ int unit_test_str2ld() {
 }
 
 int unit_test_buffer() {
-    BUFFER *wb = buffer_create(1);
+    BUFFER *wb = buffer_create(1, NULL);
     char string[2048 + 1];
     char final[9000 + 1];
     int i;
@@ -1206,12 +1318,14 @@ int run_test(struct test *test)
             rrddim_set(st, "dim2", test->feed2[c]);
         }
 
-        rrdset_done(st);
+        struct timeval now;
+        now_realtime_timeval(&now);
+        rrdset_timed_done(st, now, false);
 
         // align the first entry to second boundary
         if(!c) {
             fprintf(stderr, "    > %s: fixing first collection time to be %llu microseconds to second boundary\n", test->name, test->feed[c].microseconds);
-            rd->last_collected_time.tv_usec = st->last_collected_time.tv_usec = st->last_updated.tv_usec = test->feed[c].microseconds;
+            rd->collector.last_collected_time.tv_usec = st->last_collected_time.tv_usec = st->last_updated.tv_usec = test->feed[c].microseconds;
             // time_start = st->last_collected_time.tv_sec;
         }
     }
@@ -1220,31 +1334,32 @@ int run_test(struct test *test)
     int errors = 0;
 
     if(st->counter != test->result_entries) {
-        fprintf(stderr, "    %s stored %zu entries, but we were expecting %lu, ### E R R O R ###\n", test->name, st->counter, test->result_entries);
+        fprintf(stderr, "    %s stored %u entries, but we were expecting %lu, ### E R R O R ###\n",
+                test->name, st->counter, test->result_entries);
         errors++;
     }
 
     unsigned long max = (st->counter < test->result_entries)?st->counter:test->result_entries;
     for(c = 0 ; c < max ; c++) {
-        NETDATA_DOUBLE v = unpack_storage_number(rd->db[c]);
+        NETDATA_DOUBLE v = unpack_storage_number(rd->db.data[c]);
         NETDATA_DOUBLE n = unpack_storage_number(pack_storage_number(test->results[c], SN_DEFAULT_FLAGS));
         int same = (roundndd(v * 10000000.0) == roundndd(n * 10000000.0))?1:0;
         fprintf(stderr, "    %s/%s: checking position %lu (at %"PRId64" secs), expecting value " NETDATA_DOUBLE_FORMAT
             ", found " NETDATA_DOUBLE_FORMAT ", %s\n",
             test->name, rrddim_name(rd), c+1,
-            (int64_t)((rrdset_first_entry_t(st) + c * st->update_every) - time_start),
+            (int64_t)((rrdset_first_entry_s(st) + c * st->update_every) - time_start),
             n, v, (same)?"OK":"### E R R O R ###");
 
         if(!same) errors++;
 
         if(rd2) {
-            v = unpack_storage_number(rd2->db[c]);
+            v = unpack_storage_number(rd2->db.data[c]);
             n = test->results2[c];
             same = (roundndd(v * 10000000.0) == roundndd(n * 10000000.0))?1:0;
             fprintf(stderr, "    %s/%s: checking position %lu (at %"PRId64" secs), expecting value " NETDATA_DOUBLE_FORMAT
                 ", found " NETDATA_DOUBLE_FORMAT ", %s\n",
                 test->name, rrddim_name(rd2), c+1,
-                (int64_t)((rrdset_first_entry_t(st) + c * st->update_every) - time_start),
+                (int64_t)((rrdset_first_entry_s(st) + c * st->update_every) - time_start),
                 n, v, (same)?"OK":"### E R R O R ###");
             if(!same) errors++;
         }
@@ -1292,7 +1407,7 @@ static int test_variable_renames(void) {
     rrddim_reset_name(st, rd2, "DIM2NAME2");
     fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rrddim_id(rd2), rrddim_name(rd2));
 
-    BUFFER *buf = buffer_create(1);
+    BUFFER *buf = buffer_create(1, NULL);
     health_api_v1_chart_variables2json(st, buf);
     fprintf(stderr, "%s", buffer_tostring(buf));
     buffer_free(buf);
@@ -1470,7 +1585,7 @@ int unit_test(long delay, long shift)
 
         // prevent it from deleting the dimensions
         rrddim_foreach_read(rd, st) {
-            rd->last_collected_time.tv_sec = st->last_collected_time.tv_sec;
+            rd->collector.last_collected_time.tv_sec = st->last_collected_time.tv_sec;
         }
         rrddim_foreach_done(rd);
 
@@ -1488,7 +1603,7 @@ int unit_test(long delay, long shift)
         fprintf(stderr, "\nPOSITION: c = %lu, EXPECTED VALUE %lu\n", c, (oincrement + c * increment + increment * (1000000 - shift) / 1000000 )* 10);
 
         rrddim_foreach_read(rd, st) {
-            sn = rd->db[c];
+            sn = rd->db.data[c];
             cn = unpack_storage_number(sn);
             fprintf(stderr, "\t %s " NETDATA_DOUBLE_FORMAT " (PACKED AS " STORAGE_NUMBER_FORMAT ")   ->   ", rrddim_id(rd), cn, sn);
 
@@ -1547,212 +1662,166 @@ int test_sqlite(void) {
         return 1;
     }
 
-    BUFFER *sql = buffer_create(ACLK_SYNC_QUERY_SIZE);
+    rc = sqlite3_create_function(db_meta, "now_usec", 1, SQLITE_ANY, 0, sqlite_now_usec, 0, 0);
+    if (unlikely(rc != SQLITE_OK)) {
+        fprintf(stderr, "Failed to register internal now_usec function");
+        return 1;
+    }
+
+    rc = sqlite3_exec_monitored(db_meta, "UPDATE MINE SET id1=now_usec(0);", 0, 0, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,"Failed to test SQLite: Update with now_usec() failed\n");
+        return 1;
+    }
+
+    BUFFER *sql = buffer_create(ACLK_SYNC_QUERY_SIZE, NULL);
     char *uuid_str = "0000_000";
-
-    buffer_sprintf(sql, TABLE_ACLK_CHART, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    buffer_flush(sql);
-    if (rc != SQLITE_OK)
-        goto error;
-
-    buffer_sprintf(sql, TABLE_ACLK_CHART_PAYLOAD, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    buffer_flush(sql);
-    if (rc != SQLITE_OK)
-        goto error;
-
-    buffer_sprintf(sql, TABLE_ACLK_CHART_LATEST, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    if (rc != SQLITE_OK)
-        goto error;
-    buffer_flush(sql);
-
-    buffer_sprintf(sql, INDEX_ACLK_CHART, uuid_str, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    if (rc != SQLITE_OK)
-        goto error;
-    buffer_flush(sql);
-
-    buffer_sprintf(sql, INDEX_ACLK_CHART_LATEST, uuid_str, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    if (rc != SQLITE_OK)
-        goto error;
-    buffer_flush(sql);
-
-    buffer_sprintf(sql, TRIGGER_ACLK_CHART_PAYLOAD, uuid_str, uuid_str, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    if (rc != SQLITE_OK)
-        goto error;
-    buffer_flush(sql);
 
     buffer_sprintf(sql, TABLE_ACLK_ALERT, uuid_str);
     rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
     if (rc != SQLITE_OK)
         goto error;
-    buffer_flush(sql);
-
-    buffer_sprintf(sql, INDEX_ACLK_ALERT, uuid_str, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    if (rc != SQLITE_OK)
-        goto error;
-    buffer_flush(sql);
 
     buffer_free(sql);
     fprintf(stderr,"SQLite is OK\n");
+    rc = sqlite3_close_v2(db_meta);
     return 0;
 error:
+    rc = sqlite3_close_v2(db_meta);
     fprintf(stderr,"SQLite statement failed: %s\n", buffer_tostring(sql));
     buffer_free(sql);
     fprintf(stderr,"SQLite tests failed\n");
     return 1;
 }
 
-int unit_test_bitmap256(void) {
+static int bitmapX_test(BITMAPX *ptr, char *expected, const char *msg) {
+    int errors = 0;
+
+    for(uint32_t idx = 0; idx < ptr->bits ; idx++) {
+        bool found_set = bitmapX_get_bit(ptr, idx);
+        bool expected_set = expected[idx];
+
+        if(found_set != expected_set) {
+            fprintf(stderr, " >>> %s(): %s, bit %u is expected %s but found %s\n",
+                    __FUNCTION__, msg, idx, expected_set?"SET":"UNSET", found_set?"SET":"UNSET");
+            errors++;
+        }
+    }
+
+    if(errors)
+        fprintf(stderr,"%s(): %s, found %d errors\n",
+                __FUNCTION__, msg, errors);
+
+    return errors;
+}
+
+#define bitmapX_set_bit_and_track(ptr, bit, value, expected) do { \
+    bitmapX_set_bit(ptr, bit, value);                             \
+    (expected)[bit] = value;                                      \
+} while(0)
+
+int unit_test_bitmaps(void) {
     fprintf(stderr, "%s() running...\n", __FUNCTION__ );
 
-    BITMAP256 test_bitmap = {0};
+    int errors = 0;
 
-    bitmap256_set_bit(&test_bitmap, 0, 1);
-    bitmap256_set_bit(&test_bitmap, 64, 1);
-    bitmap256_set_bit(&test_bitmap, 128, 1);
-    bitmap256_set_bit(&test_bitmap, 192, 1);
-    if (test_bitmap.data[0] == 1)
-        fprintf(stderr, "%s() INDEX 1 is OK\n", __FUNCTION__ );
-    if (test_bitmap.data[1] == 1)
-        fprintf(stderr, "%s() INDEX 65 is OK\n", __FUNCTION__ );
-    if (test_bitmap.data[2] == 1)
-        fprintf(stderr, "%s() INDEX 129 is OK\n", __FUNCTION__ );
-    if (test_bitmap.data[3] == 1)
-        fprintf(stderr, "%s() INDEX 192 is OK\n", __FUNCTION__ );
+    char expected[8192];
 
-    uint8_t i=0;
-    int j = 0;
-    do {
-        bitmap256_set_bit(&test_bitmap, i++, 1);
-        j++;
-    } while (j < 256);
+    BITMAP256 bmp256 = BITMAP256_INITIALIZER;
+    BITMAP1024 bmp1024 = BITMAP1024_INITIALIZER;
+    BITMAPX *bmp = NULL;
 
-    if (test_bitmap.data[0] == 0xffffffffffffffff)
-        fprintf(stderr, "%s() INDEX 0 is fully set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 0 is %lx expected 0xffffffffffffffff\n", __FUNCTION__, test_bitmap.data[0]);
-        return 1;
+    for(int x = 0; x < 3 ; x++) {
+        char msg[100 + 1];
+
+        switch (x) {
+            default:
+            case 0:
+                bmp = (BITMAPX *) &bmp256;
+                break;
+
+            case 1:
+                bmp = (BITMAPX *) &bmp1024;
+                break;
+
+            case 2:
+                bmp = bitmapX_create(8192);
+                break;
+        }
+
+        // reset
+        memset(expected, 0, bmp->bits);
+        memset(bmp->data, 0, bmp->bits / 8);
+
+        snprintf(msg, 100, "TEST 1 BITMAP %u", bmp->bits);
+        bitmapX_set_bit_and_track(bmp, 0, true, expected);
+        errors += bitmapX_test(bmp, expected, msg);
+
+        snprintf(msg, 100, "TEST 2 BITMAP %u", bmp->bits);
+        bitmapX_set_bit_and_track(bmp, 64, true, expected);
+        errors += bitmapX_test(bmp, expected, msg);
+
+        snprintf(msg, 100, "TEST 3 BITMAP %u", bmp->bits);
+        bitmapX_set_bit_and_track(bmp, 128, true, expected);
+        errors += bitmapX_test(bmp, expected, msg);
+
+        snprintf(msg, 100, "TEST 4 BITMAP %u", bmp->bits);
+        bitmapX_set_bit_and_track(bmp, 192, true, expected);
+        errors += bitmapX_test(bmp, expected, msg);
+
+        for (uint32_t step = 1; step < 256; step++) {
+            snprintf(msg, 100, "TEST 5 (setting) BITMAP %u STEP %u", bmp->bits, step);
+
+            // reset
+            memset(expected, 0, bmp->bits);
+            memset(bmp->data, 0, bmp->bits / 8);
+
+            for (uint32_t i = 0; i < bmp->bits ; i += step)
+                bitmapX_set_bit_and_track(bmp, i, true, expected);
+
+            errors += bitmapX_test(bmp, expected, msg);
+        }
+
+        for (uint32_t step = 1; step < 256; step++) {
+            snprintf(msg, 100, "TEST 6 (clearing) BITMAP %u STEP %u", bmp->bits, step);
+
+            // reset
+            memset(expected, 0, bmp->bits);
+            memset(bmp->data, 0, bmp->bits / 8);
+
+            for (uint32_t i = 0; i < bmp->bits ; i++)
+                bitmapX_set_bit_and_track(bmp, i, true, expected);
+
+            for (uint32_t i = 0; i < bmp->bits ; i += step)
+                bitmapX_set_bit_and_track(bmp, i, false, expected);
+
+            errors += bitmapX_test(bmp, expected, msg);
+        }
     }
 
-    if (test_bitmap.data[1] == 0xffffffffffffffff)
-        fprintf(stderr, "%s() INDEX 1 is fully set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 1 is %lx expected 0xffffffffffffffff\n", __FUNCTION__, test_bitmap.data[0]);
-        return 1;
-    }
+    freez(bmp);
 
-    if (test_bitmap.data[2] == 0xffffffffffffffff)
-        fprintf(stderr, "%s() INDEX 2 is fully set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 2 is %lx expected 0xffffffffffffffff\n", __FUNCTION__, test_bitmap.data[0]);
-        return 1;
-    }
-
-    if (test_bitmap.data[3] == 0xffffffffffffffff)
-        fprintf(stderr, "%s() INDEX 3 is fully set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 3 is %lx expected 0xffffffffffffffff\n", __FUNCTION__, test_bitmap.data[0]);
-        return 1;
-    }
-
-    i = 0;
-    j = 0;
-    do {
-        bitmap256_set_bit(&test_bitmap, i++, 0);
-        j++;
-    } while (j < 256);
-
-    if (test_bitmap.data[0] == 0)
-        fprintf(stderr, "%s() INDEX 0 is reset OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 0 is not reset FAILED\n", __FUNCTION__);
-        return 1;
-    }
-    if (test_bitmap.data[1] == 0)
-        fprintf(stderr, "%s() INDEX 1 is reset OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 1 is not reset FAILED\n", __FUNCTION__);
-        return 1;
-    }
-
-    if (test_bitmap.data[2] == 0)
-        fprintf(stderr, "%s() INDEX 2 is reset OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 2 is not reset FAILED\n", __FUNCTION__);
-        return 1;
-    }
-
-    if (test_bitmap.data[3] == 0)
-        fprintf(stderr, "%s() INDEX 3 is reset OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 3 is not reset FAILED\n", __FUNCTION__);
-        return 1;
-    }
-
-    i=0;
-    j = 0;
-    do {
-        bitmap256_set_bit(&test_bitmap, i, 1);
-        i += 4;
-        j += 4;
-    } while (j < 256);
-
-    if (test_bitmap.data[0] == 0x1111111111111111)
-        fprintf(stderr, "%s() INDEX 0 is 0x1111111111111111 set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 0 is %lx expected 0x1111111111111111\n", __FUNCTION__, test_bitmap.data[0]);
-        return 1;
-    }
-
-    if (test_bitmap.data[1] == 0x1111111111111111)
-        fprintf(stderr, "%s() INDEX 1 is 0x1111111111111111 set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 1 is %lx expected 0x1111111111111111\n", __FUNCTION__, test_bitmap.data[1]);
-        return 1;
-    }
-
-    if (test_bitmap.data[2] == 0x1111111111111111)
-        fprintf(stderr, "%s() INDEX 2 is 0x1111111111111111 set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 2 is %lx expected 0x1111111111111111\n", __FUNCTION__, test_bitmap.data[2]);
-        return 1;
-    }
-
-    if (test_bitmap.data[3] == 0x1111111111111111)
-        fprintf(stderr, "%s() INDEX 3 is 0x1111111111111111 set OK\n", __FUNCTION__);
-    else {
-        fprintf(stderr, "%s() INDEX 3 is %lx expected 0x1111111111111111\n", __FUNCTION__, test_bitmap.data[3]);
-        return 1;
-    }
-
-    fprintf(stderr, "%s() tests passed\n", __FUNCTION__);
-    return 0;
+    fprintf(stderr, "%s() %d errors\n", __FUNCTION__, errors);
+    return errors;
 }
 
 #ifdef ENABLE_DBENGINE
 static inline void rrddim_set_by_pointer_fake_time(RRDDIM *rd, collected_number value, time_t now)
 {
-    rd->last_collected_time.tv_sec = now;
-    rd->last_collected_time.tv_usec = 0;
-    rd->collected_value = value;
-    rd->updated = 1;
+    rd->collector.last_collected_time.tv_sec = now;
+    rd->collector.last_collected_time.tv_usec = 0;
+    rd->collector.collected_value = value;
+    rrddim_set_updated(rd);
 
-    rd->collections_counter++;
+    rd->collector.counter++;
 
     collected_number v = (value >= 0) ? value : -value;
-    if(unlikely(v > rd->collected_value_max)) rd->collected_value_max = v;
+    if(unlikely(v > rd->collector.collected_value_max)) rd->collector.collected_value_max = v;
 }
 
 static RRDHOST *dbengine_rrdhost_find_or_create(char *name)
 {
     /* We don't want to drop metrics when generating load, we prefer to block data generation itself */
-    rrdeng_drop_metrics_under_page_cache_pressure = 0;
 
     return rrdhost_find_or_create(
             name
@@ -1773,6 +1842,9 @@ static RRDHOST *dbengine_rrdhost_find_or_create(char *name)
             , default_rrdpush_destination
             , default_rrdpush_api_key
             , default_rrdpush_send_charts_matching
+            , default_rrdpush_enable_replication
+            , default_rrdpush_seconds_to_replicate
+            , default_rrdpush_replication_step
             , NULL
             , 0
     );
@@ -1816,9 +1888,9 @@ static void test_dbengine_create_charts(RRDHOST *host, RRDSET *st[CHARTS], RRDDI
     // Initialize DB with the very first entries
     for (i = 0 ; i < CHARTS ; ++i) {
         for (j = 0 ; j < DIMS ; ++j) {
-            rd[i][j]->last_collected_time.tv_sec =
+            rd[i][j]->collector.last_collected_time.tv_sec =
             st[i]->last_collected_time.tv_sec = st[i]->last_updated.tv_sec = 2 * API_RELATIVE_TIME_MAX - 1;
-            rd[i][j]->last_collected_time.tv_usec =
+            rd[i][j]->collector.last_collected_time.tv_usec =
             st[i]->last_collected_time.tv_usec = st[i]->last_updated.tv_usec = 0;
         }
     }
@@ -1828,12 +1900,15 @@ static void test_dbengine_create_charts(RRDHOST *host, RRDSET *st[CHARTS], RRDDI
         for (j = 0; j < DIMS; ++j) {
             rrddim_set_by_pointer_fake_time(rd[i][j], 69, 2 * API_RELATIVE_TIME_MAX); // set first value to 69
         }
-        rrdset_done(st[i]);
+
+        struct timeval now;
+        now_realtime_timeval(&now);
+        rrdset_timed_done(st[i], now, false);
     }
-    // Fluh pages for subsequent real values
+    // Flush pages for subsequent real values
     for (i = 0 ; i < CHARTS ; ++i) {
         for (j = 0; j < DIMS; ++j) {
-            rrdeng_store_metric_flush_current_page((rd[i][j])->tiers[0]->db_collection_handle);
+            rrdeng_store_metric_flush_current_page((rd[i][j])->tiers[0].db_collection_handle);
         }
     }
 }
@@ -1852,15 +1927,18 @@ static time_t test_dbengine_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS
     // feed it with the test data
     for (i = 0 ; i < CHARTS ; ++i) {
         for (j = 0 ; j < DIMS ; ++j) {
-            rd[i][j]->last_collected_time.tv_sec =
+            storage_engine_store_change_collection_frequency(rd[i][j]->tiers[0].db_collection_handle, update_every);
+
+            rd[i][j]->collector.last_collected_time.tv_sec =
             st[i]->last_collected_time.tv_sec = st[i]->last_updated.tv_sec = time_now;
-            rd[i][j]->last_collected_time.tv_usec =
+            rd[i][j]->collector.last_collected_time.tv_usec =
             st[i]->last_collected_time.tv_usec = st[i]->last_updated.tv_usec = 0;
         }
     }
     for (c = 0; c < REGION_POINTS[current_region] ; ++c) {
         time_now += update_every; // time_now = start + (c + 1) * update_every
-        for (i = 0 ; i < CHARTS ; ++i) {
+
+         for (i = 0 ; i < CHARTS ; ++i) {
             st[i]->usec_since_last_update = USEC_PER_SEC * update_every;
 
             for (j = 0; j < DIMS; ++j) {
@@ -1868,7 +1946,12 @@ static time_t test_dbengine_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS
                        j * REGION_POINTS[current_region] + c;
                 rrddim_set_by_pointer_fake_time(rd[i][j], next, time_now);
             }
-            rrdset_done(st[i]);
+
+            struct timeval now;
+            now.tv_sec = time_now;
+            now.tv_usec = 0;
+
+            rrdset_timed_done(st[i], now, false);
         }
     }
     return time_now; //time_end
@@ -1884,7 +1967,7 @@ static int test_dbengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DI
     int i, j, k, c, errors, update_every;
     collected_number last;
     NETDATA_DOUBLE value, expected;
-    struct rrddim_query_handle handle;
+    struct storage_engine_query_handle handle;
     size_t value_errors = 0, time_errors = 0;
 
     update_every = REGION_UPDATE_EVERY[current_region];
@@ -1895,16 +1978,16 @@ static int test_dbengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DI
         time_now = time_start + (c + 1) * update_every;
         for (i = 0 ; i < CHARTS ; ++i) {
             for (j = 0; j < DIMS; ++j) {
-                rd[i][j]->tiers[0]->query_ops.init(rd[i][j]->tiers[0]->db_metric_handle, &handle, time_now, time_now + QUERY_BATCH * update_every, TIER_QUERY_FETCH_SUM);
+                storage_engine_query_init(rd[i][j]->tiers[0].backend, rd[i][j]->tiers[0].db_metric_handle, &handle, time_now, time_now + QUERY_BATCH * update_every, STORAGE_PRIORITY_NORMAL);
                 for (k = 0; k < QUERY_BATCH; ++k) {
                     last = ((collected_number)i * DIMS) * REGION_POINTS[current_region] +
                            j * REGION_POINTS[current_region] + c + k;
                     expected = unpack_storage_number(pack_storage_number((NETDATA_DOUBLE)last, SN_DEFAULT_FLAGS));
 
-                    STORAGE_POINT sp = rd[i][j]->tiers[0]->query_ops.next_metric(&handle);
+                    STORAGE_POINT sp = storage_engine_query_next_metric(&handle);
                     value = sp.sum;
-                    time_retrieved = sp.start_time;
-                    end_time = sp.end_time;
+                    time_retrieved = sp.start_time_s;
+                    end_time = sp.end_time_s;
 
                     same = (roundndd(value) == roundndd(expected)) ? 1 : 0;
                     if(!same) {
@@ -1923,7 +2006,7 @@ static int test_dbengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DI
                         errors++;
                     }
                 }
-                rd[i][j]->tiers[0]->query_ops.finalize(&handle);
+                storage_engine_query_finalize(&handle);
             }
         }
     }
@@ -1942,10 +2025,11 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
                                     int current_region, time_t time_start, time_t time_end)
 {
     int update_every = REGION_UPDATE_EVERY[current_region];
-    fprintf(stderr, "%s() running on region %d, start time %ld, end time %ld, update every %d...\n", __FUNCTION__, current_region, time_start, time_end, update_every);
+    fprintf(stderr, "%s() running on region %d, start time %lld, end time %lld, update every %d, on %d dimensions...\n",
+            __FUNCTION__, current_region, (long long)time_start, (long long)time_end, update_every, CHARTS * DIMS);
     uint8_t same;
     time_t time_now, time_retrieved;
-    int i, j, errors, value_errors = 0, time_errors = 0;
+    int i, j, errors, value_errors = 0, time_errors = 0, value_right = 0, time_right = 0;
     long c;
     collected_number last;
     NETDATA_DOUBLE value, expected;
@@ -1954,23 +2038,23 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
     long points = (time_end - time_start) / update_every;
     for (i = 0 ; i < CHARTS ; ++i) {
         ONEWAYALLOC *owa = onewayalloc_create(0);
-        RRDR *r = rrd2rrdr(owa, st[i], points, time_start, time_end,
-                           RRDR_GROUPING_AVERAGE, 0, RRDR_OPTION_NATURAL_POINTS,
-                           NULL, NULL, NULL, 0, 0);
-
+        RRDR *r = rrd2rrdr_legacy(owa, st[i], points, time_start, time_end,
+                                  RRDR_GROUPING_AVERAGE, 0, RRDR_OPTION_NATURAL_POINTS,
+                                  NULL, NULL, 0, 0,
+                                  QUERY_SOURCE_UNITTEST, STORAGE_PRIORITY_NORMAL);
         if (!r) {
             fprintf(stderr, "    DB-engine unittest %s: empty RRDR on region %d ### E R R O R ###\n", rrdset_name(st[i]), current_region);
             return ++errors;
         } else {
-            assert(r->st == st[i]);
-            for (c = 0; c != rrdr_rows(r) ; ++c) {
+            assert(r->internal.qt->request.st == st[i]);
+            for (c = 0; c != (long)rrdr_rows(r) ; ++c) {
                 RRDDIM *d;
                 time_now = time_start + (c + 1) * update_every;
                 time_retrieved = r->t[c];
 
                 // for each dimension
-                rrddim_foreach_read(d, r->st) {
-                    if(unlikely((int)d_dfe.counter >= r->d)) break; // d_counter is provided by the dictionary dfe
+                rrddim_foreach_read(d, r->internal.qt->request.st) {
+                    if(unlikely(d_dfe.counter >= r->d)) break; // d_counter is provided by the dictionary dfe
 
                     j = (int)d_dfe.counter;
 
@@ -1984,17 +2068,22 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
                     same = (roundndd(value) == roundndd(expected)) ? 1 : 0;
                     if(!same) {
                         if(value_errors < 20)
-                            fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, expecting value " NETDATA_DOUBLE_FORMAT
+                            fprintf(stderr, "    DB-engine unittest %s/%s: point #%ld, at %lu secs, expecting value " NETDATA_DOUBLE_FORMAT
                                 ", RRDR found " NETDATA_DOUBLE_FORMAT ", ### E R R O R ###\n",
-                                    rrdset_name(st[i]), rrddim_name(rd[i][j]), (unsigned long)time_now, expected, value);
+                                    rrdset_name(st[i]), rrddim_name(rd[i][j]), (long) c+1, (unsigned long)time_now, expected, value);
                         value_errors++;
                     }
+                    else
+                        value_right++;
+
                     if(time_retrieved != time_now) {
                         if(time_errors < 20)
-                            fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
-                                    rrdset_name(st[i]), rrddim_name(rd[i][j]), (unsigned long)time_now, (unsigned long)time_retrieved);
+                            fprintf(stderr, "    DB-engine unittest %s/%s: point #%ld at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
+                                    rrdset_name(st[i]), rrddim_name(rd[i][j]), (long)c+1, (unsigned long)time_now, (unsigned long)time_retrieved);
                         time_errors++;
                     }
+                    else
+                        time_right++;
                 }
                 rrddim_foreach_done(d);
             }
@@ -2004,18 +2093,26 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
     }
 
     if(value_errors)
-        fprintf(stderr, "%d value errors encountered\n", value_errors);
+        fprintf(stderr, "%d value errors encountered (%d were ok)\n", value_errors, value_right);
 
     if(time_errors)
-        fprintf(stderr, "%d time errors encountered\n", time_errors);
+        fprintf(stderr, "%d time errors encountered (%d were ok)\n", time_errors, value_right);
 
     return errors + value_errors + time_errors;
+}
+
+void test_dbengine_charts_and_dims_are_not_collected(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]) {
+    for(int c = 0; c < CHARTS ; c++) {
+        st[c]->rrdcontexts.collected = false;
+        for(int d = 0; d < DIMS ; d++)
+            rd[c][d]->rrdcontexts.collected = false;
+    }
 }
 
 int test_dbengine(void)
 {
     fprintf(stderr, "%s() running...\n", __FUNCTION__ );
-    int i, j, errors, value_errors = 0, time_errors = 0, update_every, current_region;
+    int i, j, errors = 0, value_errors = 0, time_errors = 0, update_every, current_region;
     RRDHOST *host = NULL;
     RRDSET *st[CHARTS];
     RRDDIM *rd[CHARTS][DIMS];
@@ -2038,9 +2135,8 @@ int test_dbengine(void)
     time_start[current_region] = 2 * API_RELATIVE_TIME_MAX;
     time_end[current_region] = test_dbengine_create_metrics(st,rd, current_region, time_start[current_region]);
 
-    errors = test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
-    if (errors)
-        goto error_out;
+    errors += test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
+    test_dbengine_charts_and_dims_are_not_collected(st, rd);
 
     current_region = 1; //this is the second region of data
     update_every = REGION_UPDATE_EVERY[current_region]; // set data collection frequency to 3 seconds
@@ -2048,7 +2144,7 @@ int test_dbengine(void)
     for (i = 0 ; i < CHARTS ; ++i) {
         st[i]->update_every = update_every;
         for (j = 0; j < DIMS; ++j) {
-            rrdeng_store_metric_flush_current_page((rd[i][j])->tiers[0]->db_collection_handle);
+            rrdeng_store_metric_flush_current_page((rd[i][j])->tiers[0].db_collection_handle);
         }
     }
 
@@ -2057,9 +2153,8 @@ int test_dbengine(void)
         time_start[current_region] += update_every - time_start[current_region] % update_every;
     time_end[current_region] = test_dbengine_create_metrics(st,rd, current_region, time_start[current_region]);
 
-    errors = test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
-    if (errors)
-        goto error_out;
+    errors += test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
+    test_dbengine_charts_and_dims_are_not_collected(st, rd);
 
     current_region = 2; //this is the third region of data
     update_every = REGION_UPDATE_EVERY[current_region]; // set data collection frequency to 1 seconds
@@ -2067,7 +2162,7 @@ int test_dbengine(void)
     for (i = 0 ; i < CHARTS ; ++i) {
         st[i]->update_every = update_every;
         for (j = 0; j < DIMS; ++j) {
-            rrdeng_store_metric_flush_current_page((rd[i][j])->tiers[0]->db_collection_handle);
+            rrdeng_store_metric_flush_current_page((rd[i][j])->tiers[0].db_collection_handle);
         }
     }
 
@@ -2076,42 +2171,40 @@ int test_dbengine(void)
         time_start[current_region] += update_every - time_start[current_region] % update_every;
     time_end[current_region] = test_dbengine_create_metrics(st,rd, current_region, time_start[current_region]);
 
-    errors = test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
-    if (errors)
-        goto error_out;
+    errors += test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
+    test_dbengine_charts_and_dims_are_not_collected(st, rd);
 
     for (current_region = 0 ; current_region < REGIONS ; ++current_region) {
-        errors = test_dbengine_check_rrdr(st, rd, current_region, time_start[current_region], time_end[current_region]);
-        if (errors)
-            goto error_out;
+        errors += test_dbengine_check_rrdr(st, rd, current_region, time_start[current_region], time_end[current_region]);
     }
 
     current_region = 1;
     update_every = REGION_UPDATE_EVERY[current_region]; // use the maximum update_every = 3
-    errors = 0;
     long points = (time_end[REGIONS - 1] - time_start[0]) / update_every; // cover all time regions with RRDR
     long point_offset = (time_start[current_region] - time_start[0]) / update_every;
     for (i = 0 ; i < CHARTS ; ++i) {
         ONEWAYALLOC *owa = onewayalloc_create(0);
-        RRDR *r = rrd2rrdr(owa, st[i], points, time_start[0] + update_every,
-                           time_end[REGIONS - 1], RRDR_GROUPING_AVERAGE, 0,
-                           RRDR_OPTION_NATURAL_POINTS, NULL, NULL, NULL, 0, 0);
+        RRDR *r = rrd2rrdr_legacy(owa, st[i], points, time_start[0] + update_every,
+                                  time_end[REGIONS - 1], RRDR_GROUPING_AVERAGE, 0,
+                                  RRDR_OPTION_NATURAL_POINTS, NULL, NULL, 0, 0,
+                                  QUERY_SOURCE_UNITTEST, STORAGE_PRIORITY_NORMAL);
+
         if (!r) {
             fprintf(stderr, "    DB-engine unittest %s: empty RRDR ### E R R O R ###\n", rrdset_name(st[i]));
             ++errors;
         } else {
             long c;
 
-            assert(r->st == st[i]);
+            assert(r->internal.qt->request.st == st[i]);
             // test current region values only, since they must be left unchanged
-            for (c = point_offset ; c < point_offset + rrdr_rows(r) / REGIONS / 2 ; ++c) {
+            for (c = point_offset ; c < (long)(point_offset + rrdr_rows(r) / REGIONS / 2) ; ++c) {
                 RRDDIM *d;
                 time_t time_now = time_start[current_region] + (c - point_offset + 2) * update_every;
                 time_t time_retrieved = r->t[c];
 
                 // for each dimension
-                rrddim_foreach_read(d, r->st) {
-                    if(unlikely((int)d_dfe.counter >= r->d)) break; // d_counter is provided by the dictionary dfe
+                rrddim_foreach_read(d, r->internal.qt->request.st) {
+                    if(unlikely(d_dfe.counter >= r->d)) break; // d_counter is provided by the dictionary dfe
 
                     j = (int)d_dfe.counter;
 
@@ -2143,11 +2236,11 @@ int test_dbengine(void)
         }
         onewayalloc_destroy(owa);
     }
-error_out:
+
     rrd_wrlock();
-    rrdeng_prepare_exit((struct rrdengine_instance *)host->storage_instance[0]);
+    rrdeng_prepare_exit((struct rrdengine_instance *)host->db[0].instance);
     rrdhost_delete_charts(host);
-    rrdeng_exit((struct rrdengine_instance *)host->storage_instance[0]);
+    rrdeng_exit((struct rrdengine_instance *)host->db[0].instance);
     rrd_unlock();
 
     return errors + value_errors + time_errors;
@@ -2213,9 +2306,9 @@ static void generate_dbengine_chart(void *arg)
     // feed it with the test data
     time_current = time_present - history_seconds;
     for (j = 0 ; j < DSET_DIMS ; ++j) {
-        rd[j]->last_collected_time.tv_sec =
+        rd[j]->collector.last_collected_time.tv_sec =
         st->last_collected_time.tv_sec = st->last_updated.tv_sec = time_current - update_every;
-        rd[j]->last_collected_time.tv_usec =
+        rd[j]->collector.last_collected_time.tv_usec =
         st->last_collected_time.tv_usec = st->last_updated.tv_usec = 0;
     }
     for( ; !thread_info->done && time_current < time_present ; time_current += update_every) {
@@ -2232,7 +2325,7 @@ static void generate_dbengine_chart(void *arg)
         thread_info->time_max = time_current;
     }
     for (j = 0; j < DSET_DIMS; ++j) {
-        rrdeng_store_metric_finalize((rd[j])->tiers[0]->db_collection_handle);
+        rrdeng_store_metric_finalize((rd[j])->tiers[0].db_collection_handle);
     }
 }
 
@@ -2292,7 +2385,7 @@ void generate_dbengine_dataset(unsigned history_seconds)
     }
     freez(thread_info);
     rrd_wrlock();
-    rrdhost_free(host, 1);
+    rrdhost_free___while_having_rrd_wrlock(localhost, true);
     rrd_unlock();
 }
 
@@ -2325,7 +2418,7 @@ static void query_dbengine_chart(void *arg)
     time_t time_now, time_retrieved, end_time;
     collected_number generatedv;
     NETDATA_DOUBLE value, expected;
-    struct rrddim_query_handle handle;
+    struct storage_engine_query_handle handle;
     size_t value_errors = 0, time_errors = 0;
 
     do {
@@ -2352,13 +2445,13 @@ static void query_dbengine_chart(void *arg)
             time_before = MIN(time_after + duration, time_max); /* up to 1 hour queries */
         }
 
-        rd->tiers[0]->query_ops.init(rd->tiers[0]->db_metric_handle, &handle, time_after, time_before, TIER_QUERY_FETCH_SUM);
+        storage_engine_query_init(rd->tiers[0].backend, rd->tiers[0].db_metric_handle, &handle, time_after, time_before, STORAGE_PRIORITY_NORMAL);
         ++thread_info->queries_nr;
         for (time_now = time_after ; time_now <= time_before ; time_now += update_every) {
             generatedv = generate_dbengine_chart_value(i, j, time_now);
             expected = unpack_storage_number(pack_storage_number((NETDATA_DOUBLE) generatedv, SN_DEFAULT_FLAGS));
 
-            if (unlikely(rd->tiers[0]->query_ops.is_finished(&handle))) {
+            if (unlikely(storage_engine_query_is_finished(&handle))) {
                 if (!thread_info->delete_old_data) { /* data validation only when we don't delete */
                     fprintf(stderr, "    DB-engine stresstest %s/%s: at %lu secs, expecting value " NETDATA_DOUBLE_FORMAT
                         ", found data gap, ### E R R O R ###\n",
@@ -2368,10 +2461,10 @@ static void query_dbengine_chart(void *arg)
                 break;
             }
 
-            STORAGE_POINT sp = rd->tiers[0]->query_ops.next_metric(&handle);
+            STORAGE_POINT sp = storage_engine_query_next_metric(&handle);
             value = sp.sum;
-            time_retrieved = sp.start_time;
-            end_time = sp.end_time;
+            time_retrieved = sp.start_time_s;
+            end_time = sp.end_time_s;
 
             if (!netdata_double_isnumber(value)) {
                 if (!thread_info->delete_old_data) { /* data validation only when we don't delete */
@@ -2406,7 +2499,7 @@ static void query_dbengine_chart(void *arg)
                 }
             }
         }
-        rd->tiers[0]->query_ops.finalize(&handle);
+        storage_engine_query_finalize(&handle);
     } while(!thread_info->done);
 
     if(value_errors)
@@ -2527,7 +2620,7 @@ void dbengine_stress_test(unsigned TEST_DURATION_SEC, unsigned DSET_CHARTS, unsi
     test_duration = now_realtime_sec() - (time_start - HISTORY_SECONDS);
     if (!test_duration)
         test_duration = 1;
-    fprintf(stderr, "\nDB-engine stress test finished in %ld seconds.\n", test_duration);
+    fprintf(stderr, "\nDB-engine stress test finished in %lld seconds.\n", (long long)test_duration);
     unsigned long stored_metrics_nr = 0;
     for (i = 0 ; i < DSET_CHARTS ; ++i) {
         stored_metrics_nr += chart_threads[i]->stored_metrics_nr;
@@ -2542,8 +2635,8 @@ void dbengine_stress_test(unsigned TEST_DURATION_SEC, unsigned DSET_CHARTS, unsi
     fprintf(stderr, "%lu metric data points were queried by %u reader threads.\n", queried_metrics_nr, QUERY_THREADS);
     fprintf(stderr, "Query starting time is randomly chosen from the beginning of the time-series up to the time of\n"
                     "the latest data point, and ending time from 1 second up to 1 hour after the starting time.\n");
-    fprintf(stderr, "Performance is %lu written data points/sec and %lu read data points/sec.\n",
-            stored_metrics_nr / test_duration, queried_metrics_nr / test_duration);
+    fprintf(stderr, "Performance is %lld written data points/sec and %lld read data points/sec.\n",
+            (long long)(stored_metrics_nr / test_duration), (long long)(queried_metrics_nr / test_duration));
 
     for (i = 0 ; i < DSET_CHARTS ; ++i) {
         freez(chart_threads[i]);
@@ -2554,9 +2647,9 @@ void dbengine_stress_test(unsigned TEST_DURATION_SEC, unsigned DSET_CHARTS, unsi
     }
     freez(query_threads);
     rrd_wrlock();
-    rrdeng_prepare_exit((struct rrdengine_instance *)host->storage_instance[0]);
+    rrdeng_prepare_exit((struct rrdengine_instance *)host->db[0].instance);
     rrdhost_delete_charts(host);
-    rrdeng_exit((struct rrdengine_instance *)host->storage_instance[0]);
+    rrdeng_exit((struct rrdengine_instance *)host->db[0].instance);
     rrd_unlock();
 }
 

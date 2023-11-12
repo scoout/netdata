@@ -37,7 +37,7 @@ static void timex_main_cleanup(void *ptr)
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
-    info("cleaning up...");
+    netdata_log_info("cleaning up...");
 
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
@@ -57,14 +57,14 @@ void *timex_main(void *ptr)
     int do_offset = config_get_boolean(CONFIG_SECTION_TIMEX, "time offset", CONFIG_BOOLEAN_YES);
 
     if (unlikely(do_sync == CONFIG_BOOLEAN_NO && do_offset == CONFIG_BOOLEAN_NO)) {
-        info("No charts to show");
+        netdata_log_info("No charts to show");
         goto exit;
     }
 
     usec_t step = update_every * USEC_PER_SEC;
     heartbeat_t hb;
     heartbeat_init(&hb);
-    while (!netdata_exit) {
+    while (service_running(SERVICE_COLLECTORS)) {
         worker_is_idle();
         heartbeat_next(&hb, step);
         worker_is_busy(0);
@@ -79,7 +79,7 @@ void *timex_main(void *ptr)
         prev_sync_state = sync_state;
 
         if (non_seq_failure) {
-            error("Cannot get clock synchronization state");
+            netdata_log_error("Cannot get clock synchronization state");
             continue;
         }
 
@@ -109,8 +109,6 @@ void *timex_main(void *ptr)
                     RRDSET_TYPE_LINE);
 
                 rd_sync_state = rrddim_add(st_sync_state, "state", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-            } else {
-                rrdset_next(st_sync_state);
             }
 
             rrddim_set_by_pointer(st_sync_state, rd_sync_state, sync_state != TIME_ERROR ? 1 : 0);
@@ -137,13 +135,11 @@ void *timex_main(void *ptr)
                     sta_codes[i].rd =
                         rrddim_add(st_clock_status, sta_codes[i].name, NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
                 }
-            } else {
-                rrdset_next(st_clock_status);
             }
 
-            for (int i = 0; sta_codes[i].name != NULL; i++) {
+            for (int i = 0; sta_codes[i].name != NULL; i++)
                 rrddim_set_by_pointer(st_clock_status, sta_codes[i].rd, timex_buf.status & sta_codes[i].code ? 1 : 0);
-            }
+
             rrdset_done(st_clock_status);
         }
 
@@ -167,8 +163,6 @@ void *timex_main(void *ptr)
                     RRDSET_TYPE_LINE);
 
                 rd_offset = rrddim_add(st_offset, "offset", NULL, 1, divisor, RRD_ALGORITHM_ABSOLUTE);
-            } else {
-                rrdset_next(st_offset);
             }
 
             rrddim_set_by_pointer(st_offset, rd_offset, timex_buf.offset);

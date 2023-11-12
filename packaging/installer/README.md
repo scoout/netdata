@@ -1,112 +1,143 @@
-<!--
-title: "Installation guide"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/packaging/installer/README.md
--->
+import { OneLineInstallWget, OneLineInstallCurl } from '@site/src/components/OneLineInstall/'
+import { InstallRegexLink, InstallBoxRegexLink } from '@site/src/components/InstallRegexLink/'
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
-import { Install, InstallBox } from '../../../src/components/Install/'
+# Install Netdata
 
-import { OneLineInstallWget, OneLineInstallCurl } from '../../../src/components/OneLineInstall/'
+This document will guide you through installing the open-source Netdata monitoring Agent on Linux, Docker, Kubernetes, and many others, often with one command.
 
-# Installation guide
+Netdata is very flexible and can be used to monitor all kinds of infrastructure. Read more about possible [Deployment strategies](https://github.com/netdata/netdata/blob/master/docs/category-overview-pages/deployment-strategies.md) to understand what better suites your needs.
 
-Netdata is a monitoring agent designed to run on all your systems: physical and virtual servers, containers, even
-IoT/edge devices. Netdata runs on Linux, FreeBSD, macOS, Kubernetes, Docker, and all their derivatives.
+## Get started
 
-The best way to install Netdata is with our [**automatic one-line installation
-script**](#automatic-one-line-installation-script), which works with all Linux distributions and most macOS environments.
+Netdata is a free and open-source (FOSS) monitoring agent that collects thousands of hardware and software metrics from
+any physical or virtual system (we call them _nodes_). These metrics are organized in an easy-to-use and -navigate interface.
 
-If you want to install Netdata with Docker, on a Kubernetes cluster, or a different operating system, see [Have a
-different operating system, or want to try another
-method?](#have-a-different-operating-system-or-want-to-try-another-method)
+Together with [Netdata Cloud](https://github.com/netdata/netdata/blob/master/docs/quickstart/infrastructure.md), you can monitor your entire infrastructure in
+real time and troubleshoot problems that threaten the health of your nodes.
 
-Some third parties, such as the packaging teams at various Linux distributions, distribute old, broken, or altered
-packages. We recommend you install Netdata using one of the methods listed below to guarantee you get the latest
-checksum-verified packages.
+Netdata runs permanently on all your physical/virtual servers, containers, cloud deployments, and edge/IoT devices. It
+runs on Linux distributions (Ubuntu, Debian, CentOS, and more), container/microservice platforms (Kubernetes clusters,
+Docker), and many other operating systems (FreeBSD, macOS), with no `sudo` required.
 
-Netdata collects anonymous usage information by default and sends it to our self hosted [PostHog](https://github.com/PostHog/posthog) installation. PostHog is an open source product analytics platform, you can read
-about the information collected, and learn how to-opt, on our [anonymous statistics](/docs/anonymous-statistics.md)
-page.
+To install Netdata in minutes on your platform:
 
-The usage statistics are _vital_ for us, as we use them to discover bugs and prioritize new features. We thank you for
-_actively_ contributing to Netdata's future.
+1. Sign up to <https://app.netdata.cloud/>
+2. You will be presented with an empty space, and a prompt to "Connect Nodes" with the install command for each platform
+3. Select the platform you want to install Netdata to, copy and paste the script into your node's terminal, and run it
 
-## Automatic one-line installation script
+Upon installation completing successfully, you should be able to see the node live in your Netdata Space and live charts
+in the Overview tab. [Read more about the cloud features](https://github.com/netdata/netdata/blob/master/docs/quickstart/infrastructure.md).
 
-![](https://registry.my-netdata.io/api/v1/badge.svg?chart=web_log_nginx.requests_per_url&options=unaligned&dimensions=kickstart&group=sum&after=-3600&label=last+hour&units=installations&value_color=orange&precision=0) ![](https://registry.my-netdata.io/api/v1/badge.svg?chart=web_log_nginx.requests_per_url&options=unaligned&dimensions=kickstart&group=sum&after=-86400&label=today&units=installations&precision=0)
+Where you go from here is based on your use case, immediate needs, and experience with monitoring and troubleshooting,
+but we have some hints on what you might want to do next.
 
-This method is fully automatic on all Linux distributions, including Ubuntu, Debian, Fedora, CentOS, and others, as well as on mac OS environments.
+### What's next?
 
-To install Netdata, including all dependencies required to connect to Netdata Cloud, and get _automatic nightly
-updates_, run the following as your normal user:
+Explore our [general advanced installation options and troubleshooting](#advanced-installation-options-and-troubleshooting), specific options
+for the [single line installer](#install-on-linux-with-one-line-installer), or [other installation methods](#other-installation-methods).
 
-<OneLineInstallWget/>
+#### Configuration
 
-Or, if you have cURL but not wget (such as on macOS):
+Discover the recommended way to [configure Netdata's settings or behavior](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md) using our built-in
+`edit-config` script, then apply that knowledge to mission-critical tweaks, such as [changing how long Netdata stores
+metrics](https://github.com/netdata/netdata/blob/master/docs/store/change-metrics-storage.md).
 
-<OneLineInstallCurl/>
+#### Data collection
 
-This script will preferentially use native DEB/RPM packages if we provide them for your platform.
+If Netdata didn't autodetect all the hardware, containers, services, or applications running on your node, you should
+learn more about [how data collectors work](https://github.com/netdata/netdata/blob/master/collectors/README.md). If there's a [supported
+collector](https://github.com/netdata/netdata/blob/master/collectors/COLLECTORS.md) for metrics you need, [configure the collector](https://github.com/netdata/netdata/blob/master/collectors/REFERENCE.md)
+or read about its requirements to configure your endpoint to publish metrics in the correct format and endpoint.
 
-To see more information about this installation script, including how to disable automatic updates, get nightly vs.
-stable releases, or disable anonymous statistics, see the [`kickstart.sh` method
-page](/packaging/installer/methods/kickstart.md).
+#### Alerts & notifications
 
-Scroll down for details about [automatic updates](#automatic-updates) or [nightly vs. stable
-releases](#nightly-vs-stable-releases).
+Netdata comes with hundreds of preconfigured alerts, designed by our monitoring gurus in parallel with our open-source
+community, but you may want to [edit alerts](https://github.com/netdata/netdata/blob/master/health/REFERENCE.md) or
+[enable notifications](https://github.com/netdata/netdata/blob/master/docs/monitor/enable-notifications.md) to customize your Netdata experience.
 
-### Post-installation
+#### Make your deployment production ready
 
-When you're finished with installation, check out our [single-node](/docs/quickstart/single-node.md) or
-[infrastructure](/docs/quickstart/infrastructure.md) monitoring quickstart guides based on your use case.
+Go through our [deployment strategies](https://github.com/netdata/netdata/edit/master/docs/category-overview-pages/deployment-strategies.md),
+for suggested configuration changes for production deployments.
 
-Or, skip straight to [configuring the Netdata Agent](/docs/configure/nodes.md).
+## Install on Linux with one-line installer
 
-Read through Netdata's [documentation](https://learn.netdata.cloud/docs), which is structured based on actions and
-solutions, to enable features like health monitoring, alarm notifications, long-term metrics storage, exporting to
-external databases, and more.
+The **recommended** way to install Netdata on a Linux node (physical, virtual, container, IoT) is our one-line
+[kickstart script](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/kickstart.md).
+This script automatically installs dependencies and builds Netdata from its source code.
 
-## Have a different operating system, or want to try another method?
+To install, copy the script, paste it into your node's terminal, and hit `Enter` to begin the installation process.
 
-Netdata works on many different platforms. To see all supported platforms, check out our [platform support
-policy](/packaging/PLATFORM_SUPPORT.md).
+ <Tabs>
+  <TabItem value="wget" label=<code>wget</code>>
 
-Below, you can find a few additional installation methods, followed by separate instructions for a variety of unique
-operating systems.
+  <OneLineInstallWget/>
 
-### Alternative methods
+  </TabItem>
+  <TabItem value="curl" label=<code>curl</code>>
 
-<Install>
-  <InstallBox
-    to="/docs/agent/packaging/installer/methods/kickstart"
-    os="General Linux with one-line installer (recommended)"
-    svg="linux" />
-  <InstallBox
-    to="/docs/agent/packaging/docker"
+  <OneLineInstallCurl/>
+
+  </TabItem>
+</Tabs>
+
+> ### Note
+>
+> If you plan to also claim the node to Netdata Cloud, make sure to replace `YOUR_CLAIM_TOKEN` with the claim token of your space, and `YOUR_ROOM_ID` with the ID of the room you are claiming to.
+> You can leave the room id blank to have your node claimed to the default "All nodes" room.
+
+Jump up to [what's next](#whats-next) to learn how to view your new dashboard and take your next steps in monitoring and
+troubleshooting with Netdata.
+
+## Other installation methods
+
+<InstallRegexLink>
+  <InstallBoxRegexLink
+    to="[](https://github.com/netdata/netdata/blob/master/packaging/docker/README.md)"
     os="Run with Docker"
     svg="docker" />
-  <InstallBox
-    to="/docs/agent/packaging/installer/methods/kubernetes"
+  <InstallBoxRegexLink
+    to="[](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/kubernetes.md)"
     os="Deploy on Kubernetes"
     svg="kubernetes" />
-   <InstallBox
-    to="/docs/agent/packaging/installer/methods/macos"
+   <InstallBoxRegexLink
+    to="[](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/macos.md)"
     os="Install on macOS"
     svg="macos" />
-  <InstallBox
-    to="/docs/agent/packaging/installer/methods/manual"
+  <InstallBoxRegexLink
+    to="[](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/packages.md)"
+    os="Native DEB/RPM packages"
+    svg="linux" />
+  <InstallBoxRegexLink
+    to="[](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/manual.md)"
     os="Linux from Git"
     svg="linux" />
-  <InstallBox
-    to="/docs/agent/packaging/installer/methods/source"
+  <InstallBoxRegexLink
+    to="[](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/source.md)"
     os="Linux from source"
     svg="linux" />
-  <InstallBox
-    to="/docs/agent/packaging/installer/methods/offline" 
+  <InstallBoxRegexLink
+    to="[](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/offline.md)"
     os="Linux for offline nodes"
     svg="linux" />
-</Install>
+</InstallRegexLink>
 
-## Automatic updates
+- [Native DEB/RPM packages](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/packages.md)
+- [Run with Docker](https://github.com/netdata/netdata/blob/master/packaging/docker/README.md)
+- [Deploy on Kubernetes](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/kubernetes.md)
+- [Install on macOS](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/macos.md)
+- [Linux from Git](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/manual.md)
+- [Linux from source](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/source.md)
+- [Linux for offline nodes](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/offline.md)
+
+The full list of all installation methods for various systems is available in [Netdata Learn](https://learn.netdata.cloud),
+under [Installation](https://github.com/netdata/netdata/blob/master/docs/category-overview-pages/installation-overview.md).
+
+## Advanced installation options and troubleshooting
+
+### Automatic updates
 
 By default, Netdata's installation scripts enable automatic updates for both nightly and stable release channels.
 
@@ -119,9 +150,9 @@ wget -O /tmp/netdata-kickstart.sh https://my-netdata.io/kickstart.sh && sh /tmp/
 ```
 
 With automatic updates disabled, you can choose exactly when and how you [update
-Netdata](/packaging/installer/UPDATE.md).
+Netdata](https://github.com/netdata/netdata/blob/master/packaging/installer/UPDATE.md).
 
-### Network usage of Netdata’s automatic updater
+#### Network usage of Netdata’s automatic updater
 
 The auto-update functionality set up by the installation scripts requires working internet access to function
 correctly. In particular, it currently requires access to GitHub (to check if a newer version of the updater script
@@ -132,7 +163,7 @@ Note that the auto-update functionality will check for updates to itself indepen
 and will try to use the latest version of the updater script whenever possible. This is intended to reduce the
 amount of effort required by users to get updates working again in the event of a bug in the updater code.
 
-## Nightly vs. stable releases
+### Nightly vs. stable releases
 
 The Netdata team maintains two releases of the Netdata agent: **nightly** and **stable**. By default, Netdata's
 installation scripts will give you **automatic, nightly** updates, as that is our recommended configuration.
@@ -149,22 +180,50 @@ the community helps fix any bugs that might have been introduced in previous rel
 
 **Pros of using nightly releases:**
 
--   Get the latest features and bug fixes as soon as they're available
--   Receive security-related fixes immediately
--   Use stable, fully-tested code that's always improving
--   Leverage the same Netdata experience our community is using
+- Get the latest features and bug fixes as soon as they're available
+- Receive security-related fixes immediately
+- Use stable, fully-tested code that's always improving
+- Leverage the same Netdata experience our community is using
 
 **Pros of using stable releases:**
 
--   Protect yourself from the rare instance when major bugs slip through our testing and negatively affect a Netdata
+- Protect yourself from the rare instance when major bugs slip through our testing and negatively affect a Netdata
     installation
--   Retain more control over the Netdata version you use
+- Retain more control over the Netdata version you use
 
-## Troubleshooting and known issues
+### Anonymous statistics
+
+Starting with v1.30, Netdata collects anonymous usage information by default and sends it to a self-hosted PostHog instance within the Netdata infrastructure. Read about the information collected, and learn how to-opt, on our [anonymous statistics](https://github.com/netdata/netdata/blob/master/docs/anonymous-statistics.md) page.
+
+The usage statistics are _vital_ for us, as we use them to discover bugs and prioritize new features. We thank you for
+_actively_ contributing to Netdata's future.
+
+### Troubleshooting and known issues
 
 We are tracking a few issues related to installation and packaging.
 
-### Older distributions (Ubuntu 14.04, Debian 8, CentOS 6) and OpenSSL
+#### Installs on hosts without IPv4 connectivity
+
+Our regular installation process requires access to a number of GitHub services that do not have IPv6 connectivity. As
+such, using the kickstart install script on such hosts generally does not work, and will typically fail with an
+error from cURL or wget about connection timeouts. You can check if your system is affected by this by attempting
+to connect to (or ping) `https://api.github.com/`. Failing to connect indicates that you are affected by this issue.
+
+There are three potential workarounds for this:
+
+1. You can configure your system with a proper IPv6 transition mechanism, such as NAT64. GitHub’s anachronisms
+   affect many projects other than just Netdata, and there are unfortunately a number of other services out there
+   that do not provide IPv6 connectivity, so taking this route is likely to save you time in the future as well.
+2. If you are using a system that we publish native packages for (see our [platform support
+   policy](https://github.com/netdata/netdata/blob/master/packaging/PLATFORM_SUPPORT.md) for more details),
+   you can manually set up our native package repositories as outlined in our [native package install
+   documentation](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/packages.md). Our official
+   package repositories do provide service over IPv6, so they work without issue on hosts without IPv4 connectivity.
+3. If neither of the above options work for you, you can still install using our [offline installation
+   instructions](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/offline.md), though
+   do note that the offline install source must be prepared from a system with IPv4 connectivity.
+
+#### Older distributions (Ubuntu 14.04, Debian 8, CentOS 6) and OpenSSL
 
 If you're running an older Linux distribution or one that has reached EOL, such as Ubuntu 14.04 LTS, Debian 8, or CentOS
 6, your Agent may not be able to securely connect to Netdata Cloud due to an outdated version of OpenSSL. These old
@@ -175,15 +234,15 @@ If you choose to continue using the outdated version of OpenSSL, your node will 
 with hostname verification disabled. Without verification, your Netdata Cloud connection could be vulnerable to
 man-in-the-middle attacks.
 
-### CentOS 6 and CentOS 8
+#### CentOS 6 and CentOS 8
 
 To install the Agent on certain CentOS and RHEL systems, you must enable non-default repositories, such as EPEL or
-PowerTools, to gather hard dependencies. See the [CentOS 6](/packaging/installer/methods/manual.md#centos--rhel-6x) and
-[CentOS 8](/packaging/installer/methods/manual.md#centos--rhel-8x) sections for more information.
+PowerTools, to gather hard dependencies. See the [CentOS 6](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/manual.md#centos--rhel-6x) and
+[CentOS 8](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/manual.md#centos--rhel-8x) sections for more information.
 
-### Access to file is not permitted
+#### Access to file is not permitted
 
-If you see an error similar to `Access to file is not permitted: /usr/share/netdata/web//index.html` when you try to
+If you see an error similar to `Access to file is not permitted: /usr/share/netdata/web/index.html` when you try to
 visit the Agent dashboard at `http://NODE:19999`, you need to update Netdata's permissions to match those of your
 system.
 
@@ -200,19 +259,17 @@ These files need to have the same user and group used to install your netdata. S
 `netdata` and group `netdata`, in this scenario you will need to run the following command to fix the error:
 
 ```bash
-# chown -R netdata.netdata /usr/share/netdata/web
+# chown -R netdata:netdata /usr/share/netdata/web
 ```
 
-### Multiple versions of OpenSSL
+#### Multiple versions of OpenSSL
 
 We've received reports from the community about issues with running the `kickstart.sh` script on systems that have both
 a distribution-installed version of OpenSSL and a manually-installed local version. The Agent's installer cannot handle
 both.
 
-### Clang compiler on Linux
+#### Clang compiler on Linux
 
 Our current build process has some issues when using certain configurations of the `clang` C compiler on Linux. See [the
 section on `nonrepresentable section on output`
-errors](/packaging/installer/methods/manual.md#nonrepresentable-section-on-output-errors) for a workaround.
-
-
+errors](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/manual.md#nonrepresentable-section-on-output-errors) for a workaround.

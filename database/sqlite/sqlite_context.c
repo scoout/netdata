@@ -43,7 +43,7 @@ int sql_init_context_database(int memory)
         return 1;
     }
 
-    info("SQLite database %s initialization", sqlite_database);
+    netdata_log_info("SQLite database %s initialization", sqlite_database);
 
     char buf[1024 + 1] = "";
     const char *list[2] = { buf, NULL };
@@ -52,51 +52,20 @@ int sql_init_context_database(int memory)
     if (likely(!memory))
         target_version = perform_context_database_migration(db_context_meta, DB_CONTEXT_METADATA_VERSION);
 
-    // https://www.sqlite.org/pragma.html#pragma_auto_vacuum
-    // PRAGMA schema.auto_vacuum = 0 | NONE | 1 | FULL | 2 | INCREMENTAL;
-    snprintfz(buf, 1024, "PRAGMA auto_vacuum=%s;", config_get(CONFIG_SECTION_SQLITE, "auto vacuum", "INCREMENTAL"));
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list)) return 1;
-
-    // https://www.sqlite.org/pragma.html#pragma_synchronous
-    // PRAGMA schema.synchronous = 0 | OFF | 1 | NORMAL | 2 | FULL | 3 | EXTRA;
-    snprintfz(buf, 1024, "PRAGMA synchronous=%s;", config_get(CONFIG_SECTION_SQLITE, "synchronous", "NORMAL"));
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list))  return 1;
-
-    // https://www.sqlite.org/pragma.html#pragma_journal_mode
-    // PRAGMA schema.journal_mode = DELETE | TRUNCATE | PERSIST | MEMORY | WAL | OFF
-    snprintfz(buf, 1024, "PRAGMA journal_mode=%s;", config_get(CONFIG_SECTION_SQLITE, "journal mode", "WAL"));
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list)) return 1;
-
-    // https://www.sqlite.org/pragma.html#pragma_temp_store
-    // PRAGMA temp_store = 0 | DEFAULT | 1 | FILE | 2 | MEMORY;
-    snprintfz(buf, 1024, "PRAGMA temp_store=%s;", config_get(CONFIG_SECTION_SQLITE, "temp store", "MEMORY"));
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list)) return 1;
-    
-    // https://www.sqlite.org/pragma.html#pragma_journal_size_limit
-    // PRAGMA schema.journal_size_limit = N ;
-    snprintfz(buf, 1024, "PRAGMA journal_size_limit=%lld;", config_get_number(CONFIG_SECTION_SQLITE, "journal size limit", 16777216));
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list)) return 1;
-
-    // https://www.sqlite.org/pragma.html#pragma_cache_size
-    // PRAGMA schema.cache_size = pages;
-    // PRAGMA schema.cache_size = -kibibytes;
-    snprintfz(buf, 1024, "PRAGMA cache_size=%lld;", config_get_number(CONFIG_SECTION_SQLITE, "cache size", -2000));
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list)) return 1;
-
-    snprintfz(buf, 1024, "PRAGMA user_version=%d;", target_version);
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list)) return 1;
+    if (configure_sqlite_database(db_context_meta, target_version))
+        return 1;
 
     if (likely(!memory))
         snprintfz(buf, 1024, "ATTACH DATABASE \"%s/netdata-meta.db\" as meta;", netdata_configured_cache_dir);
     else
         snprintfz(buf, 1024, "ATTACH DATABASE ':memory:' as meta;");
 
-    if(init_database_batch(db_context_meta, DB_CHECK_NONE, 0, list)) return 1;
+    if(init_database_batch(db_context_meta, list)) return 1;
 
-    if (init_database_batch(db_context_meta, DB_CHECK_NONE, 0, &database_context_config[0]))
+    if (init_database_batch(db_context_meta, &database_context_config[0]))
         return 1;
 
-    if (init_database_batch(db_context_meta, DB_CHECK_NONE, 0, &database_context_cleanup[0]))
+    if (init_database_batch(db_context_meta, &database_context_cleanup[0]))
         return 1;
 
     return 0;
@@ -112,19 +81,18 @@ void sql_close_context_database(void)
     if (unlikely(!db_context_meta))
         return;
 
-    info("Closing context SQLite database");
+    netdata_log_info("Closing context SQLite database");
 
     rc = sqlite3_close_v2(db_context_meta);
     if (unlikely(rc != SQLITE_OK))
         error_report("Error %d while closing the context SQLite database, %s", rc, sqlite3_errstr(rc));
-    return;
 }
 
 //
 // Fetching data
 //
 #define CTX_GET_CHART_LIST  "SELECT c.chart_id, c.type||'.'||c.id, c.name, c.context, c.title, c.unit, c.priority, " \
-        "c.update_every, c.chart_type, c.family FROM meta.chart c WHERE c.host_id = @host_id and c.chart_id is not null; "
+        "c.update_every, c.chart_type, c.family FROM chart c WHERE c.host_id = @host_id and c.chart_id is not null; "
 
 void ctx_get_chart_list(uuid_t *host_uuid, void (*dict_cb)(SQL_CHART_DATA *, void *), void *data)
 {
@@ -137,7 +105,7 @@ void ctx_get_chart_list(uuid_t *host_uuid, void (*dict_cb)(SQL_CHART_DATA *, voi
     }
 
     if (unlikely(!res)) {
-        rc = prepare_statement(db_context_meta, CTX_GET_CHART_LIST, &res);
+        rc = prepare_statement(db_meta, CTX_GET_CHART_LIST, &res);
         if (rc != SQLITE_OK) {
             error_report("Failed to prepare statement to fetch chart list");
             return;
@@ -172,14 +140,15 @@ skip_load:
 }
 
 // Dimension list
-#define CTX_GET_DIMENSION_LIST  "SELECT d.dim_id, d.id, d.name FROM meta.dimension d WHERE d.chart_id = @id and d.dim_id is not null;"
+#define CTX_GET_DIMENSION_LIST  "SELECT d.dim_id, d.id, d.name, CASE WHEN INSTR(d.options,\"hidden\") > 0 THEN 1 ELSE 0 END " \
+        "FROM dimension d WHERE d.chart_id = @id and d.dim_id is not null ORDER BY d.rowid ASC;"
 void ctx_get_dimension_list(uuid_t *chart_uuid, void (*dict_cb)(SQL_DIMENSION_DATA *, void *), void *data)
 {
     int rc;
     static __thread sqlite3_stmt *res = NULL;
 
     if (unlikely(!res)) {
-        rc = prepare_statement(db_context_meta, CTX_GET_DIMENSION_LIST, &res);
+        rc = prepare_statement(db_meta, CTX_GET_DIMENSION_LIST, &res);
         if (rc != SQLITE_OK) {
             error_report("Failed to prepare statement to fetch chart dimension data");
             return;
@@ -198,6 +167,7 @@ void ctx_get_dimension_list(uuid_t *chart_uuid, void (*dict_cb)(SQL_DIMENSION_DA
         uuid_copy(dimension_data.dim_id, *((uuid_t *)sqlite3_column_blob(res, 0)));
         dimension_data.id = (char *) sqlite3_column_text(res, 1);
         dimension_data.name = (char *) sqlite3_column_text(res, 2);
+        dimension_data.hidden = sqlite3_column_int(res, 3);
         dict_cb(&dimension_data, data);
     }
 
@@ -241,8 +211,6 @@ failed:
     rc = sqlite3_reset(res);
     if (rc != SQLITE_OK)
         error_report("Failed to reset statement that fetches chart label data, rc = %d", rc);
-
-    return;
 }
 
 // CONTEXT LIST
@@ -281,8 +249,8 @@ void ctx_get_context_list(uuid_t *host_uuid, void (*dict_cb)(VERSIONED_CONTEXT_D
         context_data.chart_type = (char *) sqlite3_column_text(res, 3);
         context_data.units = (char *) sqlite3_column_text(res, 4);
         context_data.priority = sqlite3_column_int64(res, 5);
-        context_data.first_time_t = sqlite3_column_int64(res, 6);
-        context_data.last_time_t = sqlite3_column_int64(res, 7);
+        context_data.first_time_s = sqlite3_column_int64(res, 6);
+        context_data.last_time_s = sqlite3_column_int64(res, 7);
         context_data.deleted = sqlite3_column_int(res, 8);
         context_data.family = (char *) sqlite3_column_text(res, 9);
         dict_cb(&context_data, data);
@@ -358,21 +326,21 @@ int ctx_store_context(uuid_t *host_uuid, VERSIONED_CONTEXT_DATA *context_data)
         goto skip_store;
     }
 
-    rc = sqlite3_bind_int64(res, 8, (time_t) context_data->first_time_t);
+    rc = sqlite3_bind_int64(res, 8, (time_t) context_data->first_time_s);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind first_time_t to store context details");
         goto skip_store;
     }
 
-    rc = sqlite3_bind_int64(res, 9, (time_t) context_data->last_time_t);
+    rc = sqlite3_bind_int64(res, 9, (time_t) context_data->last_time_s);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind last_time_t to store context details");
         goto skip_store;
     }
 
-    rc = sqlite3_bind_int(res, 10, (time_t) context_data->deleted);
+    rc = sqlite3_bind_int(res, 10, context_data->deleted);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind last_time_t to store context details");
+        error_report("Failed to bind deleted flag to store context details");
         goto skip_store;
     }
 
@@ -429,11 +397,11 @@ int ctx_delete_context(uuid_t *host_uuid, VERSIONED_CONTEXT_DATA *context_data)
     if (rc_stored != SQLITE_DONE)
         error_report("Failed to delete context %s, rc = %d", context_data->id, rc_stored);
 #ifdef NETDATA_INTERNAL_CHECKS
-     else {
-         char host_uuid_str[UUID_STR_LEN];
-         uuid_unparse_lower(*host_uuid, host_uuid_str);
-         info("%s: Deleted context %s under host %s", __FUNCTION__ , context_data->id, host_uuid_str);
-     }
+    else {
+        char host_uuid_str[UUID_STR_LEN];
+        uuid_unparse_lower(*host_uuid, host_uuid_str);
+        netdata_log_info("%s: Deleted context %s under host %s", __FUNCTION__, context_data->id, host_uuid_str);
+    }
 #endif
 
 skip_delete:
@@ -447,7 +415,13 @@ skip_delete:
 int sql_context_cache_stats(int op)
 {
     int count, dummy;
+
+    if (unlikely(!db_context_meta))
+        return 0;
+
+    netdata_thread_disable_cancelability();
     sqlite3_db_status(db_context_meta, op, &count, &dummy, 0);
+    netdata_thread_enable_cancelability();
     return count;
 }
 
@@ -458,7 +432,7 @@ int sql_context_cache_stats(int op)
 static void dict_ctx_get_context_list_cb(VERSIONED_CONTEXT_DATA *context_data, void *data)
 {
     (void)data;
-    info("   Context id = %s "
+    netdata_log_info("   Context id = %s "
          "version = %"PRIu64" "
          "title = %s "
          "chart_type = %s "
@@ -474,8 +448,8 @@ static void dict_ctx_get_context_list_cb(VERSIONED_CONTEXT_DATA *context_data, v
          context_data->chart_type,
          context_data->units,
          context_data->priority,
-         context_data->first_time_t,
-         context_data->last_time_t,
+         context_data->first_time_s,
+         context_data->last_time_s,
          context_data->deleted,
          context_data->family);
 }
@@ -484,6 +458,8 @@ int ctx_unittest(void)
 {
     uuid_t host_uuid;
     uuid_generate(host_uuid);
+
+    initialize_thread_key_pool();
 
     int rc = sql_init_context_database(1);
 
@@ -500,63 +476,64 @@ int ctx_unittest(void)
     context_data.family = strdupz("TestContextFamily");
     context_data.priority = 50000;
     context_data.deleted = 0;
-    context_data.first_time_t = 1657781000;
-    context_data.last_time_t  = 1657781100;
+    context_data.first_time_s = 1657781000;
+    context_data.last_time_s  = 1657781100;
     context_data.version  = now_realtime_usec();
 
     if (likely(!ctx_store_context(&host_uuid, &context_data)))
-        info("Entry %s inserted", context_data.id);
+        netdata_log_info("Entry %s inserted", context_data.id);
     else
-        info("Entry %s not inserted", context_data.id);
+        netdata_log_info("Entry %s not inserted", context_data.id);
 
     if (likely(!ctx_store_context(&host_uuid, &context_data)))
-        info("Entry %s inserted", context_data.id);
+        netdata_log_info("Entry %s inserted", context_data.id);
     else
-        info("Entry %s not inserted", context_data.id);
+        netdata_log_info("Entry %s not inserted", context_data.id);
 
     // This will change end time
-    context_data.first_time_t = 1657781000;
-    context_data.last_time_t  = 1657782001;
+    context_data.first_time_s = 1657781000;
+    context_data.last_time_s  = 1657782001;
     if (likely(!ctx_update_context(&host_uuid, &context_data)))
-        info("Entry %s updated", context_data.id);
+        netdata_log_info("Entry %s updated", context_data.id);
     else
-        info("Entry %s not updated", context_data.id);
-    info("List context start after insert");
+        netdata_log_info("Entry %s not updated", context_data.id);
+    netdata_log_info("List context start after insert");
     ctx_get_context_list(&host_uuid, dict_ctx_get_context_list_cb, NULL);
-    info("List context end after insert");
+    netdata_log_info("List context end after insert");
 
     // This will change start time
-    context_data.first_time_t = 1657782000;
-    context_data.last_time_t  = 1657782001;
+    context_data.first_time_s = 1657782000;
+    context_data.last_time_s  = 1657782001;
     if (likely(!ctx_update_context(&host_uuid, &context_data)))
-        info("Entry %s updated", context_data.id);
+        netdata_log_info("Entry %s updated", context_data.id);
     else
-        info("Entry %s not updated", context_data.id);
+        netdata_log_info("Entry %s not updated", context_data.id);
 
     // This will list one entry
-    info("List context start after insert");
+    netdata_log_info("List context start after insert");
     ctx_get_context_list(&host_uuid, dict_ctx_get_context_list_cb, NULL);
-    info("List context end after insert");
+    netdata_log_info("List context end after insert");
 
-    info("List context start after insert");
+    netdata_log_info("List context start after insert");
     ctx_get_context_list(&host_uuid, dict_ctx_get_context_list_cb, NULL);
-    info("List context end after insert");
+    netdata_log_info("List context end after insert");
 
     // This will delete the entry
     if (likely(!ctx_delete_context(&host_uuid, &context_data)))
-        info("Entry %s deleted", context_data.id);
+        netdata_log_info("Entry %s deleted", context_data.id);
     else
-        info("Entry %s not deleted", context_data.id);
+        netdata_log_info("Entry %s not deleted", context_data.id);
 
     freez((void *)context_data.id);
     freez((void *)context_data.title);
     freez((void *)context_data.chart_type);
     freez((void *)context_data.family);
+    freez((void *)context_data.units);
 
     // The list should be empty
-    info("List context start after delete");
+    netdata_log_info("List context start after delete");
     ctx_get_context_list(&host_uuid, dict_ctx_get_context_list_cb, NULL);
-    info("List context end after delete");
+    netdata_log_info("List context end after delete");
 
     sql_close_context_database();
 

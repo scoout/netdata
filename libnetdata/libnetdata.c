@@ -21,6 +21,81 @@ int enable_ksm = 0;
 volatile sig_atomic_t netdata_exit = 0;
 const char *program_version = VERSION;
 
+#define MAX_JUDY_SIZE_TO_ARAL 24
+static bool judy_sizes_config[MAX_JUDY_SIZE_TO_ARAL + 1] = {
+        [3] = true,
+        [4] = true,
+        [5] = true,
+        [6] = true,
+        [7] = true,
+        [8] = true,
+        [10] = true,
+        [11] = true,
+        [15] = true,
+        [23] = true,
+};
+static ARAL *judy_sizes_aral[MAX_JUDY_SIZE_TO_ARAL + 1] = {};
+
+struct aral_statistics judy_sizes_aral_statistics = {};
+
+void aral_judy_init(void) {
+    for(size_t Words = 0; Words <= MAX_JUDY_SIZE_TO_ARAL; Words++)
+        if(judy_sizes_config[Words]) {
+            char buf[30+1];
+            snprintfz(buf, 30, "judy-%zu", Words * sizeof(Word_t));
+            judy_sizes_aral[Words] = aral_create(
+                    buf,
+                    Words * sizeof(Word_t),
+                    0,
+                    65536,
+                    &judy_sizes_aral_statistics,
+                    NULL, NULL, false, false);
+        }
+}
+
+size_t judy_aral_overhead(void) {
+    return aral_overhead_from_stats(&judy_sizes_aral_statistics);
+}
+
+size_t judy_aral_structures(void) {
+    return aral_structures_from_stats(&judy_sizes_aral_statistics);
+}
+
+static ARAL *judy_size_aral(Word_t Words) {
+    if(Words <= MAX_JUDY_SIZE_TO_ARAL && judy_sizes_aral[Words])
+        return judy_sizes_aral[Words];
+
+    return NULL;
+}
+
+inline Word_t JudyMalloc(Word_t Words) {
+    Word_t Addr;
+
+    ARAL *ar = judy_size_aral(Words);
+    if(ar)
+        Addr = (Word_t) aral_mallocz(ar);
+    else
+        Addr = (Word_t) mallocz(Words * sizeof(Word_t));
+
+    return(Addr);
+}
+
+inline void JudyFree(void * PWord, Word_t Words) {
+    ARAL *ar = judy_size_aral(Words);
+    if(ar)
+        aral_freez(ar, PWord);
+    else
+        freez(PWord);
+}
+
+Word_t JudyMallocVirtual(Word_t Words) {
+    return JudyMalloc(Words);
+}
+
+void JudyFreeVirtual(void * PWord, Word_t Words) {
+    JudyFree(PWord, Words);
+}
+
 // ----------------------------------------------------------------------------
 // memory allocation functions that handle failures
 
@@ -30,128 +105,342 @@ const char *program_version = VERSION;
 // its lifetime), these can be used to override the default system allocation
 // routines.
 
-#ifdef NETDATA_LOG_ALLOCATIONS
-#warning NETDATA_LOG_ALLOCATIONS ENABLED - set log_thread_memory_allocations=1 on any thread to log all its allocations - or use log_allocations() to log them on demand
+#ifdef NETDATA_TRACE_ALLOCATIONS
+#warning NETDATA_TRACE_ALLOCATIONS ENABLED
+#include "Judy.h"
 
-static __thread struct memory_statistics {
-    volatile ssize_t malloc_calls_made;
-    volatile ssize_t calloc_calls_made;
-    volatile ssize_t realloc_calls_made;
-    volatile ssize_t strdup_calls_made;
-    volatile ssize_t free_calls_made;
-    volatile ssize_t memory_calls_made;
-    volatile ssize_t allocated_memory;
-    volatile ssize_t mmapped_memory;
-} memory_statistics = { 0, 0, 0, 0, 0, 0, 0, 0 };
+#if defined(HAVE_DLSYM) && defined(ENABLE_DLSYM)
+#include <dlfcn.h>
 
-__thread size_t log_thread_memory_allocations = 0;
+typedef void (*libc_function_t)(void);
 
-inline void log_allocations_int(const char *file, const char *function, const unsigned long line) {
-    static __thread struct memory_statistics old = { 0, 0, 0, 0, 0, 0, 0, 0 };
+static void *malloc_first_run(size_t size);
+static void *(*libc_malloc)(size_t) = malloc_first_run;
 
-    fprintf(stderr, "%s MEMORY ALLOCATIONS: (%04lu@%s:%s): Allocated %zd KiB (%+zd B), mmapped %zd KiB (%+zd B): : malloc %zd (%+zd), calloc %zd (%+zd), realloc %zd (%+zd), strdup %zd (%+zd), free %zd (%+zd)\n",
-            netdata_thread_tag(),
-            line, file, function,
-            (memory_statistics.allocated_memory + 512) / 1024, memory_statistics.allocated_memory - old.allocated_memory,
-            (memory_statistics.mmapped_memory + 512) / 1024, memory_statistics.mmapped_memory - old.mmapped_memory,
-            memory_statistics.malloc_calls_made, memory_statistics.malloc_calls_made - old.malloc_calls_made,
-            memory_statistics.calloc_calls_made, memory_statistics.calloc_calls_made - old.calloc_calls_made,
-            memory_statistics.realloc_calls_made, memory_statistics.realloc_calls_made - old.realloc_calls_made,
-            memory_statistics.strdup_calls_made, memory_statistics.strdup_calls_made - old.strdup_calls_made,
-            memory_statistics.free_calls_made, memory_statistics.free_calls_made - old.free_calls_made
-    );
+static void *calloc_first_run(size_t n, size_t size);
+static void *(*libc_calloc)(size_t, size_t) = calloc_first_run;
 
-    memcpy(&old, &memory_statistics, sizeof(struct memory_statistics));
-}
+static void *realloc_first_run(void *ptr, size_t size);
+static void *(*libc_realloc)(void *, size_t) = realloc_first_run;
 
-static inline void mmap_accounting(size_t size) {
-    if(log_thread_memory_allocations) {
-        memory_statistics.memory_calls_made++;
-        memory_statistics.mmapped_memory += size;
+static void free_first_run(void *ptr);
+static void (*libc_free)(void *) = free_first_run;
+
+static char *strdup_first_run(const char *s);
+static char *(*libc_strdup)(const char *) = strdup_first_run;
+
+static size_t malloc_usable_size_first_run(void *ptr);
+#ifdef HAVE_MALLOC_USABLE_SIZE
+static size_t (*libc_malloc_usable_size)(void *) = malloc_usable_size_first_run;
+#else
+static size_t (*libc_malloc_usable_size)(void *) = NULL;
+#endif
+
+static void link_system_library_function(libc_function_t *func_pptr, const char *name, bool required) {
+    *func_pptr = dlsym(RTLD_NEXT, name);
+    if(!*func_pptr && required) {
+        fprintf(stderr, "FATAL: Cannot find system's %s() function.\n", name);
+        abort();
     }
 }
 
-void *mallocz_int(const char *file, const char *function, const unsigned long line, size_t size) {
-    memory_statistics.memory_calls_made++;
-    memory_statistics.malloc_calls_made++;
-    memory_statistics.allocated_memory += size;
-
-    if(log_thread_memory_allocations)
-        log_allocations_int(file, function, line);
-
-    size_t *n = (size_t *)malloc(sizeof(size_t) + size);
-    if (unlikely(!n)) fatal("mallocz() cannot allocate %zu bytes of memory.", size);
-    *n = size;
-    return (void *)&n[1];
+static void *malloc_first_run(size_t size) {
+    link_system_library_function((libc_function_t *) &libc_malloc, "malloc", true);
+    return libc_malloc(size);
 }
 
-void *callocz_int(const char *file, const char *function, const unsigned long line, size_t nmemb, size_t size) {
-    size = nmemb * size;
-
-    memory_statistics.memory_calls_made++;
-    memory_statistics.calloc_calls_made++;
-    memory_statistics.allocated_memory += size;
-    if(log_thread_memory_allocations)
-        log_allocations_int(file, function, line);
-
-    size_t *n = (size_t *)calloc(1, sizeof(size_t) + size);
-    if (unlikely(!n)) fatal("callocz() cannot allocate %zu bytes of memory.", size);
-    *n = size;
-    return (void *)&n[1];
+static void *calloc_first_run(size_t n, size_t size) {
+    link_system_library_function((libc_function_t *) &libc_calloc, "calloc", true);
+    return libc_calloc(n, size);
 }
 
-void *reallocz_int(const char *file, const char *function, const unsigned long line, void *ptr, size_t size) {
-    if(!ptr) return mallocz_int(file, function, line, size);
-
-    size_t *n = (size_t *)ptr;
-    n--;
-    size_t old_size = *n;
-
-    n = realloc(n, sizeof(size_t) + size);
-    if (unlikely(!n)) fatal("reallocz() cannot allocate %zu bytes of memory (from %zu bytes).", size, old_size);
-
-    memory_statistics.memory_calls_made++;
-    memory_statistics.realloc_calls_made++;
-    memory_statistics.allocated_memory += (size - old_size);
-    if(log_thread_memory_allocations)
-        log_allocations_int(file, function, line);
-
-    *n = size;
-    return (void *)&n[1];
+static void *realloc_first_run(void *ptr, size_t size) {
+    link_system_library_function((libc_function_t *) &libc_realloc, "realloc", true);
+    return libc_realloc(ptr, size);
 }
 
-char *strdupz_int(const char *file, const char *function, const unsigned long line, const char *s) {
-    size_t size = strlen(s) + 1;
+static void free_first_run(void *ptr) {
+    link_system_library_function((libc_function_t *) &libc_free, "free", true);
+    libc_free(ptr);
+}
 
-    memory_statistics.memory_calls_made++;
-    memory_statistics.strdup_calls_made++;
-    memory_statistics.allocated_memory += size;
-    if(log_thread_memory_allocations)
-        log_allocations_int(file, function, line);
+static char *strdup_first_run(const char *s) {
+    link_system_library_function((libc_function_t *) &libc_strdup, "strdup", true);
+    return libc_strdup(s);
+}
 
-    size_t *n = (size_t *)malloc(sizeof(size_t) + size);
-    if (unlikely(!n)) fatal("strdupz() cannot allocate %zu bytes of memory.", size);
+static size_t malloc_usable_size_first_run(void *ptr) {
+    link_system_library_function((libc_function_t *) &libc_malloc_usable_size, "malloc_usable_size", false);
 
-    *n = size;
-    char *t = (char *)&n[1];
-    strcpy(t, s);
+    if(libc_malloc_usable_size)
+        return libc_malloc_usable_size(ptr);
+    else
+        return 0;
+}
+
+void *malloc(size_t size) {
+    return mallocz(size);
+}
+
+void *calloc(size_t n, size_t size) {
+    return callocz(n, size);
+}
+
+void *realloc(void *ptr, size_t size) {
+    return reallocz(ptr, size);
+}
+
+void *reallocarray(void *ptr, size_t n, size_t size) {
+    return reallocz(ptr, n * size);
+}
+
+void free(void *ptr) {
+    freez(ptr);
+}
+
+char *strdup(const char *s) {
+    return strdupz(s);
+}
+
+size_t malloc_usable_size(void *ptr) {
+    return mallocz_usable_size(ptr);
+}
+#else // !HAVE_DLSYM
+
+static void *(*libc_malloc)(size_t) = malloc;
+static void *(*libc_calloc)(size_t, size_t) = calloc;
+static void *(*libc_realloc)(void *, size_t) = realloc;
+static void (*libc_free)(void *) = free;
+
+#ifdef HAVE_MALLOC_USABLE_SIZE
+static size_t (*libc_malloc_usable_size)(void *) = malloc_usable_size;
+#else
+static size_t (*libc_malloc_usable_size)(void *) = NULL;
+#endif
+
+#endif // HAVE_DLSYM
+
+
+void posix_memfree(void *ptr) {
+    libc_free(ptr);
+}
+
+struct malloc_header_signature {
+    uint32_t magic;
+    uint32_t size;
+    struct malloc_trace *trace;
+};
+
+struct malloc_header {
+    struct malloc_header_signature signature;
+    uint8_t padding[(sizeof(struct malloc_header_signature) % MALLOC_ALIGNMENT) ? MALLOC_ALIGNMENT - (sizeof(struct malloc_header_signature) % MALLOC_ALIGNMENT) : 0];
+    uint8_t data[];
+};
+
+static size_t malloc_header_size = sizeof(struct malloc_header);
+
+int malloc_trace_compare(void *A, void *B) {
+    struct malloc_trace *a = A;
+    struct malloc_trace *b = B;
+    return strcmp(a->function, b->function);
+}
+
+static avl_tree_lock malloc_trace_index = {
+    .avl_tree = {
+        .root = NULL,
+        .compar = malloc_trace_compare},
+    .rwlock = AVL_LOCK_INITIALIZER
+};
+
+int malloc_trace_walkthrough(int (*callback)(void *item, void *data), void *data) {
+    return avl_traverse_lock(&malloc_trace_index, callback, data);
+}
+
+NEVERNULL WARNUNUSED
+static struct malloc_trace *malloc_trace_find_or_create(const char *file, const char *function, size_t line) {
+    struct malloc_trace tmp = {
+        .line = line,
+        .function = function,
+        .file = file,
+    };
+
+    struct malloc_trace *t = (struct malloc_trace *)avl_search_lock(&malloc_trace_index, (avl_t *)&tmp);
+    if(!t) {
+        t = libc_calloc(1, sizeof(struct malloc_trace));
+        if(!t) fatal("No memory");
+        t->line = line;
+        t->function = function;
+        t->file = file;
+
+        struct malloc_trace *t2 = (struct malloc_trace *)avl_insert_lock(&malloc_trace_index, (avl_t *)t);
+        if(t2 != t)
+            free(t);
+
+        t = t2;
+    }
+
+    if(!t)
+        fatal("Cannot insert to AVL");
+
     return t;
 }
 
-void freez_int(const char *file, const char *function, const unsigned long line, void *ptr) {
+void malloc_trace_mmap(size_t size) {
+    struct malloc_trace *p = malloc_trace_find_or_create("unknown", "netdata_mmap", 1);
+    size_t_atomic_count(add, p->mmap_calls, 1);
+    size_t_atomic_count(add, p->allocations, 1);
+    size_t_atomic_bytes(add, p->bytes, size);
+}
+
+void malloc_trace_munmap(size_t size) {
+    struct malloc_trace *p = malloc_trace_find_or_create("unknown", "netdata_mmap", 1);
+    size_t_atomic_count(add, p->munmap_calls, 1);
+    size_t_atomic_count(sub, p->allocations, 1);
+    size_t_atomic_bytes(sub, p->bytes, size);
+}
+
+void *mallocz_int(size_t size, const char *file, const char *function, size_t line) {
+    struct malloc_trace *p = malloc_trace_find_or_create(file, function, line);
+
+    size_t_atomic_count(add, p->malloc_calls, 1);
+    size_t_atomic_count(add, p->allocations, 1);
+    size_t_atomic_bytes(add, p->bytes, size);
+
+    struct malloc_header *t = (struct malloc_header *)libc_malloc(malloc_header_size + size);
+    if (unlikely(!t)) fatal("mallocz() cannot allocate %zu bytes of memory (%zu with header).", size, malloc_header_size + size);
+    t->signature.magic = 0x0BADCAFE;
+    t->signature.trace = p;
+    t->signature.size = size;
+
+#ifdef NETDATA_INTERNAL_CHECKS
+    for(ssize_t i = 0; i < (ssize_t)sizeof(t->padding) ;i++) // signed to avoid compiler warning when zero-padded
+        t->padding[i] = 0xFF;
+#endif
+
+    return (void *)&t->data;
+}
+
+void *callocz_int(size_t nmemb, size_t size, const char *file, const char *function, size_t line) {
+    struct malloc_trace *p = malloc_trace_find_or_create(file, function, line);
+    size = nmemb * size;
+
+    size_t_atomic_count(add, p->calloc_calls, 1);
+    size_t_atomic_count(add, p->allocations, 1);
+    size_t_atomic_bytes(add, p->bytes, size);
+
+    struct malloc_header *t = (struct malloc_header *)libc_calloc(1, malloc_header_size + size);
+    if (unlikely(!t)) fatal("mallocz() cannot allocate %zu bytes of memory (%zu with header).", size, malloc_header_size + size);
+    t->signature.magic = 0x0BADCAFE;
+    t->signature.trace = p;
+    t->signature.size = size;
+
+#ifdef NETDATA_INTERNAL_CHECKS
+    for(ssize_t i = 0; i < (ssize_t)sizeof(t->padding) ;i++) // signed to avoid compiler warning when zero-padded
+        t->padding[i] = 0xFF;
+#endif
+
+    return &t->data;
+}
+
+char *strdupz_int(const char *s, const char *file, const char *function, size_t line) {
+    struct malloc_trace *p = malloc_trace_find_or_create(file, function, line);
+    size_t size = strlen(s) + 1;
+
+    size_t_atomic_count(add, p->strdup_calls, 1);
+    size_t_atomic_count(add, p->allocations, 1);
+    size_t_atomic_bytes(add, p->bytes, size);
+
+    struct malloc_header *t = (struct malloc_header *)libc_malloc(malloc_header_size + size);
+    if (unlikely(!t)) fatal("strdupz() cannot allocate %zu bytes of memory (%zu with header).", size, malloc_header_size + size);
+    t->signature.magic = 0x0BADCAFE;
+    t->signature.trace = p;
+    t->signature.size = size;
+
+#ifdef NETDATA_INTERNAL_CHECKS
+    for(ssize_t i = 0; i < (ssize_t)sizeof(t->padding) ;i++) // signed to avoid compiler warning when zero-padded
+        t->padding[i] = 0xFF;
+#endif
+
+    memcpy(&t->data, s, size);
+    return (char *)&t->data;
+}
+
+static struct malloc_header *malloc_get_header(void *ptr, const char *caller, const char *file, const char *function, size_t line) {
+    uint8_t *ret = (uint8_t *)ptr - malloc_header_size;
+    struct malloc_header *t = (struct malloc_header *)ret;
+
+    if(t->signature.magic != 0x0BADCAFE) {
+        netdata_log_error("pointer %p is not our pointer (called %s() from %zu@%s, %s()).", ptr, caller, line, file, function);
+        return NULL;
+    }
+
+    return t;
+}
+
+void *reallocz_int(void *ptr, size_t size, const char *file, const char *function, size_t line) {
+    if(!ptr) return mallocz_int(size, file, function, line);
+
+    struct malloc_header *t = malloc_get_header(ptr, __FUNCTION__, file, function, line);
+    if(!t)
+        return libc_realloc(ptr, size);
+
+    if(t->signature.size == size) return ptr;
+    size_t_atomic_count(add, t->signature.trace->free_calls, 1);
+    size_t_atomic_count(sub, t->signature.trace->allocations, 1);
+    size_t_atomic_bytes(sub, t->signature.trace->bytes, t->signature.size);
+
+    struct malloc_trace *p = malloc_trace_find_or_create(file, function, line);
+    size_t_atomic_count(add, p->realloc_calls, 1);
+    size_t_atomic_count(add, p->allocations, 1);
+    size_t_atomic_bytes(add, p->bytes, size);
+
+    t = (struct malloc_header *)libc_realloc(t, malloc_header_size + size);
+    if (unlikely(!t)) fatal("reallocz() cannot allocate %zu bytes of memory (%zu with header).", size, malloc_header_size + size);
+    t->signature.magic = 0x0BADCAFE;
+    t->signature.trace = p;
+    t->signature.size = size;
+
+#ifdef NETDATA_INTERNAL_CHECKS
+    for(ssize_t i = 0; i < (ssize_t)sizeof(t->padding) ;i++) // signed to avoid compiler warning when zero-padded
+        t->padding[i] = 0xFF;
+#endif
+
+    return (void *)&t->data;
+}
+
+size_t mallocz_usable_size_int(void *ptr, const char *file, const char *function, size_t line) {
+    if(unlikely(!ptr)) return 0;
+
+    struct malloc_header *t = malloc_get_header(ptr, __FUNCTION__, file, function, line);
+    if(!t) {
+        if(libc_malloc_usable_size)
+            return libc_malloc_usable_size(ptr);
+        else
+            return 0;
+    }
+
+    return t->signature.size;
+}
+
+void freez_int(void *ptr, const char *file, const char *function, size_t line) {
     if(unlikely(!ptr)) return;
 
-    size_t *n = (size_t *)ptr;
-    n--;
-    size_t size = *n;
+    struct malloc_header *t = malloc_get_header(ptr, __FUNCTION__, file, function, line);
+    if(!t) {
+        libc_free(ptr);
+        return;
+    }
 
-    memory_statistics.memory_calls_made++;
-    memory_statistics.free_calls_made++;
-    memory_statistics.allocated_memory -= size;
-    if(log_thread_memory_allocations)
-        log_allocations_int(file, function, line);
+    size_t_atomic_count(add, t->signature.trace->free_calls, 1);
+    size_t_atomic_count(sub, t->signature.trace->allocations, 1);
+    size_t_atomic_bytes(sub, t->signature.trace->bytes, t->signature.size);
 
-    free(n);
+#ifdef NETDATA_INTERNAL_CHECKS
+    // it should crash if it is used after freeing it
+    memset(t, 0, malloc_header_size + t->signature.size);
+#endif
+
+    libc_free(t);
 }
 #else
 
@@ -182,6 +471,10 @@ void *reallocz(void *ptr, size_t size) {
     void *p = realloc(ptr, size);
     if (unlikely(!p)) fatal("Cannot re-allocate memory to %zu bytes.", size);
     return p;
+}
+
+void posix_memfree(void *ptr) {
+    free(ptr);
 }
 
 #endif
@@ -749,248 +1042,102 @@ void netdata_fix_chart_id(char *s) {
     while ((*s = netdata_map_chart_ids[(unsigned char) *s])) s++;
 }
 
-/*
-// http://stackoverflow.com/questions/7666509/hash-function-for-string
-uint32_t simple_hash(const char *name)
-{
-    const char *s = name;
-    uint32_t hash = 5381;
-    int i;
-
-    while((i = *s++)) hash = ((hash << 5) + hash) + i;
-
-    // fprintf(stderr, "HASH: %lu %s\n", hash, name);
-
-    return hash;
-}
-*/
-
-/*
-// http://isthe.com/chongo/tech/comp/fnv/#FNV-1a
-uint32_t simple_hash(const char *name) {
-    unsigned char *s = (unsigned char *) name;
-    uint32_t hval = 0x811c9dc5;
-
-    // FNV-1a algorithm
-    while (*s) {
-        // multiply by the 32 bit FNV magic prime mod 2^32
-        // NOTE: No need to optimize with left shifts.
-        //       GCC will use imul instruction anyway.
-        //       Tested with 'gcc -O3 -S'
-        //hval += (hval<<1) + (hval<<4) + (hval<<7) + (hval<<8) + (hval<<24);
-        hval *= 16777619;
-
-        // xor the bottom with the current octet
-        hval ^= (uint32_t) *s++;
-    }
-
-    // fprintf(stderr, "HASH: %u = %s\n", hval, name);
-    return hval;
-}
-
-uint32_t simple_uhash(const char *name) {
-    unsigned char *s = (unsigned char *) name;
-    uint32_t hval = 0x811c9dc5, c;
-
-    // FNV-1a algorithm
-    while ((c = *s++)) {
-        if (unlikely(c >= 'A' && c <= 'Z')) c += 'a' - 'A';
-        hval *= 16777619;
-        hval ^= c;
-    }
-    return hval;
-}
-*/
-
-/*
-// http://eternallyconfuzzled.com/tuts/algorithms/jsw_tut_hashing.aspx
-// one at a time hash
-uint32_t simple_hash(const char *name) {
-    unsigned char *s = (unsigned char *)name;
-    uint32_t h = 0;
-
-    while(*s) {
-        h += *s++;
-        h += (h << 10);
-        h ^= (h >> 6);
-    }
-
-    h += (h << 3);
-    h ^= (h >> 11);
-    h += (h << 15);
-
-    // fprintf(stderr, "HASH: %u = %s\n", h, name);
-
-    return h;
-}
-*/
-
-void strreverse(char *begin, char *end) {
-    while (end > begin) {
-        // clearer code.
-        char aux = *end;
-        *end-- = *begin;
-        *begin++ = aux;
-    }
-}
-
-char *strsep_on_1char(char **ptr, char c) {
-    if(unlikely(!ptr || !*ptr))
-        return NULL;
-
-    // remember the position we started
-    char *s = *ptr;
-
-    // skip separators in front
-    while(*s == c) s++;
-    char *ret = s;
-
-    // find the next separator
-    while(*s++) {
-        if(unlikely(*s == c)) {
-            *s++ = '\0';
-            *ptr = s;
-            return ret;
-        }
-    }
-
-    *ptr = NULL;
-    return ret;
-}
-
-char *mystrsep(char **ptr, char *s) {
-    char *p = "";
-    while (p && !p[0] && *ptr) p = strsep(ptr, s);
-    return (p);
-}
-
-char *trim(char *s) {
-    // skip leading spaces
-    while (*s && isspace(*s)) s++;
-    if (!*s) return NULL;
-
-    // skip tailing spaces
-    // this way is way faster. Writes only one NUL char.
-    ssize_t l = strlen(s);
-    if (--l >= 0) {
-        char *p = s + l;
-        while (p > s && isspace(*p)) p--;
-        *++p = '\0';
-    }
-
-    if (!*s) return NULL;
-
-    return s;
-}
-
-inline char *trim_all(char *buffer) {
-    char *d = buffer, *s = buffer;
-
-    // skip spaces
-    while(isspace(*s)) s++;
-
-    while(*s) {
-        // copy the non-space part
-        while(*s && !isspace(*s)) *d++ = *s++;
-
-        // add a space if we have to
-        if(*s && isspace(*s)) {
-            *d++ = ' ';
-            s++;
-        }
-
-        // skip spaces
-        while(isspace(*s)) s++;
-    }
-
-    *d = '\0';
-
-    if(d > buffer) {
-        d--;
-        if(isspace(*d)) *d = '\0';
-    }
-
-    if(!buffer[0]) return NULL;
-    return buffer;
-}
-
 static int memory_file_open(const char *filename, size_t size) {
-    // info("memory_file_open('%s', %zu", filename, size);
+    // netdata_log_info("memory_file_open('%s', %zu", filename, size);
 
     int fd = open(filename, O_RDWR | O_CREAT | O_NOATIME, 0664);
     if (fd != -1) {
         if (lseek(fd, size, SEEK_SET) == (off_t) size) {
             if (write(fd, "", 1) == 1) {
                 if (ftruncate(fd, size))
-                    error("Cannot truncate file '%s' to size %zu. Will use the larger file.", filename, size);
+                    netdata_log_error("Cannot truncate file '%s' to size %zu. Will use the larger file.", filename, size);
             }
-            else error("Cannot write to file '%s' at position %zu.", filename, size);
+            else
+                netdata_log_error("Cannot write to file '%s' at position %zu.", filename, size);
         }
-        else error("Cannot seek file '%s' to size %zu.", filename, size);
+        else
+            netdata_log_error("Cannot seek file '%s' to size %zu.", filename, size);
     }
-    else error("Cannot create/open file '%s'.", filename);
+    else
+        netdata_log_error("Cannot create/open file '%s'.", filename);
 
     return fd;
 }
 
-static inline int madvise_sequential(void *mem, size_t len) {
+inline int madvise_sequential(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_SEQUENTIAL);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_SEQUENTIAL) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_SEQUENTIAL) failed.");
     return ret;
 }
 
-static inline int madvise_dontfork(void *mem, size_t len) {
+inline int madvise_random(void *mem, size_t len) {
+    static int logger = 1;
+    int ret = madvise(mem, len, MADV_RANDOM);
+
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_RANDOM) failed.");
+    return ret;
+}
+
+inline int madvise_dontfork(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_DONTFORK);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_DONTFORK) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_DONTFORK) failed.");
     return ret;
 }
 
-static inline int madvise_willneed(void *mem, size_t len) {
+inline int madvise_willneed(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_WILLNEED);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_WILLNEED) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_WILLNEED) failed.");
     return ret;
 }
 
+inline int madvise_dontneed(void *mem, size_t len) {
+    static int logger = 1;
+    int ret = madvise(mem, len, MADV_DONTNEED);
+
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_DONTNEED) failed.");
+    return ret;
+}
+
+inline int madvise_dontdump(void *mem __maybe_unused, size_t len __maybe_unused) {
 #if __linux__
-static inline int madvise_dontdump(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_DONTDUMP);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_DONTDUMP) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_DONTDUMP) failed.");
     return ret;
-}
 #else
-static inline int madvise_dontdump(void *mem, size_t len) {
-    UNUSED(mem);
-    UNUSED(len);
-
     return 0;
-}
 #endif
+}
 
-static inline int madvise_mergeable(void *mem, size_t len) {
+inline int madvise_mergeable(void *mem __maybe_unused, size_t len __maybe_unused) {
 #ifdef MADV_MERGEABLE
     static int logger = 1;
     int ret = madvise(mem, len, MADV_MERGEABLE);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_MERGEABLE) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_MERGEABLE) failed.");
     return ret;
 #else
-    UNUSED(mem);
-    UNUSED(len);
-    
     return 0;
 #endif
 }
 
-void *netdata_mmap(const char *filename, size_t size, int flags, int ksm) {
-    // info("netdata_mmap('%s', %zu", filename, size);
+void *netdata_mmap(const char *filename, size_t size, int flags, int ksm, bool read_only, int *open_fd)
+{
+    // netdata_log_info("netdata_mmap('%s', %zu", filename, size);
 
     // MAP_SHARED is used in memory mode map
     // MAP_PRIVATE is used in memory mode ram and save
@@ -1028,11 +1175,11 @@ void *netdata_mmap(const char *filename, size_t size, int flags, int ksm) {
         fd_for_mmap = -1;
     }
 
-    mem = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, fd_for_mmap, 0);
+    mem = mmap(NULL, size, read_only ? PROT_READ : PROT_READ | PROT_WRITE, flags, fd_for_mmap, 0);
     if (mem != MAP_FAILED) {
 
-#ifdef NETDATA_LOG_ALLOCATIONS
-        mmap_accounting(size);
+#ifdef NETDATA_TRACE_ALLOCATIONS
+        malloc_trace_mmap(size);
 #endif
 
         // if we have a file open, but we didn't give it to mmap(),
@@ -1040,23 +1187,35 @@ void *netdata_mmap(const char *filename, size_t size, int flags, int ksm) {
         if(fd != -1 && fd_for_mmap == -1) {
             if (lseek(fd, 0, SEEK_SET) == 0) {
                 if (read(fd, mem, size) != (ssize_t) size)
-                    info("Cannot read from file '%s'", filename);
+                    netdata_log_info("Cannot read from file '%s'", filename);
             }
-            else info("Cannot seek to beginning of file '%s'.", filename);
+            else netdata_log_info("Cannot seek to beginning of file '%s'.", filename);
         }
 
-        madvise_sequential(mem, size);
+        // madvise_sequential(mem, size);
         madvise_dontfork(mem, size);
         madvise_dontdump(mem, size);
-        if(flags & MAP_SHARED) madvise_willneed(mem, size);
+        // if(flags & MAP_SHARED) madvise_willneed(mem, size);
         if(ksm) madvise_mergeable(mem, size);
     }
 
 cleanup:
-    if(fd != -1) close(fd);
+    if(fd != -1) {
+        if (open_fd)
+            *open_fd = fd;
+        else
+            close(fd);
+    }
     if(mem == MAP_FAILED) return NULL;
     errno = 0;
     return mem;
+}
+
+int netdata_munmap(void *ptr, size_t size) {
+#ifdef NETDATA_TRACE_ALLOCATIONS
+    malloc_trace_munmap(size);
+#endif
+    return munmap(ptr, size);
 }
 
 int memory_file_save(const char *filename, void *mem, size_t size) {
@@ -1066,12 +1225,12 @@ int memory_file_save(const char *filename, void *mem, size_t size) {
 
     int fd = open(tmpfilename, O_RDWR | O_CREAT | O_NOATIME, 0664);
     if (fd < 0) {
-        error("Cannot create/open file '%s'.", filename);
+        netdata_log_error("Cannot create/open file '%s'.", filename);
         return -1;
     }
 
     if (write(fd, mem, size) != (ssize_t) size) {
-        error("Cannot write to file '%s' %ld bytes.", filename, (long) size);
+        netdata_log_error("Cannot write to file '%s' %ld bytes.", filename, (long) size);
         close(fd);
         return -1;
     }
@@ -1079,7 +1238,7 @@ int memory_file_save(const char *filename, void *mem, size_t size) {
     close(fd);
 
     if (rename(tmpfilename, filename)) {
-        error("Cannot rename '%s' to '%s'", tmpfilename, filename);
+        netdata_log_error("Cannot rename '%s' to '%s'", tmpfilename, filename);
         return -1;
     }
 
@@ -1149,7 +1308,7 @@ unsigned long end_tsc(void) {
 int recursively_delete_dir(const char *path, const char *reason) {
     DIR *dir = opendir(path);
     if(!dir) {
-        error("Cannot read %s directory to be deleted '%s'", reason?reason:"", path);
+        netdata_log_error("Cannot read %s directory to be deleted '%s'", reason?reason:"", path);
         return -1;
     }
 
@@ -1172,16 +1331,16 @@ int recursively_delete_dir(const char *path, const char *reason) {
             continue;
         }
 
-        info("Deleting %s file '%s'", reason?reason:"", fullpath);
+        netdata_log_info("Deleting %s file '%s'", reason?reason:"", fullpath);
         if(unlikely(unlink(fullpath) == -1))
-            error("Cannot delete %s file '%s'", reason?reason:"", fullpath);
+            netdata_log_error("Cannot delete %s file '%s'", reason?reason:"", fullpath);
         else
             ret++;
     }
 
-    info("Deleting empty directory '%s'", path);
+    netdata_log_info("Deleting empty directory '%s'", path);
     if(unlikely(rmdir(path) == -1))
-        error("Cannot delete empty directory '%s'", path);
+        netdata_log_error("Cannot delete empty directory '%s'", path);
     else
         ret++;
 
@@ -1250,12 +1409,12 @@ int verify_netdata_host_prefix() {
         goto failed;
 
     if(netdata_configured_host_prefix && *netdata_configured_host_prefix)
-        info("Using host prefix directory '%s'", netdata_configured_host_prefix);
+        netdata_log_info("Using host prefix directory '%s'", netdata_configured_host_prefix);
 
     return 0;
 
 failed:
-    error("Ignoring host prefix '%s': path '%s' %s", netdata_configured_host_prefix, path, reason);
+    netdata_log_error("Ignoring host prefix '%s': path '%s' %s", netdata_configured_host_prefix, path, reason);
     netdata_configured_host_prefix = "";
     return -1;
 }
@@ -1363,18 +1522,18 @@ int path_is_file(const char *path, const char *subpath) {
 
 void recursive_config_double_dir_load(const char *user_path, const char *stock_path, const char *subpath, int (*callback)(const char *filename, void *data), void *data, size_t depth) {
     if(depth > 3) {
-        error("CONFIG: Max directory depth reached while reading user path '%s', stock path '%s', subpath '%s'", user_path, stock_path, subpath);
+        netdata_log_error("CONFIG: Max directory depth reached while reading user path '%s', stock path '%s', subpath '%s'", user_path, stock_path, subpath);
         return;
     }
 
     char *udir = strdupz_path_subpath(user_path, subpath);
     char *sdir = strdupz_path_subpath(stock_path, subpath);
 
-    debug(D_HEALTH, "CONFIG traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
+    netdata_log_debug(D_HEALTH, "CONFIG traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
 
     DIR *dir = opendir(udir);
     if (!dir) {
-        error("CONFIG cannot open user-config directory '%s'.", udir);
+        netdata_log_error("CONFIG cannot open user-config directory '%s'.", udir);
     }
     else {
         struct dirent *de = NULL;
@@ -1384,7 +1543,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                     (de->d_name[0] == '.' && de->d_name[1] == '\0') ||
                     (de->d_name[0] == '.' && de->d_name[1] == '.' && de->d_name[2] == '\0')
                         ) {
-                    debug(D_HEALTH, "CONFIG ignoring user-config directory '%s/%s'", udir, de->d_name);
+                    netdata_log_debug(D_HEALTH, "CONFIG ignoring user-config directory '%s/%s'", udir, de->d_name);
                     continue;
                 }
 
@@ -1399,24 +1558,24 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                 if(path_is_file(udir, de->d_name) &&
                    len > 5 && !strcmp(&de->d_name[len - 5], ".conf")) {
                     char *filename = strdupz_path_subpath(udir, de->d_name);
-                    debug(D_HEALTH, "CONFIG calling callback for user file '%s'", filename);
+                    netdata_log_debug(D_HEALTH, "CONFIG calling callback for user file '%s'", filename);
                     callback(filename, data);
                     freez(filename);
                     continue;
                 }
             }
 
-            debug(D_HEALTH, "CONFIG ignoring user-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
+            netdata_log_debug(D_HEALTH, "CONFIG ignoring user-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
         }
 
         closedir(dir);
     }
 
-    debug(D_HEALTH, "CONFIG traversing stock config directory '%s', user config directory '%s'", sdir, udir);
+    netdata_log_debug(D_HEALTH, "CONFIG traversing stock config directory '%s', user config directory '%s'", sdir, udir);
 
     dir = opendir(sdir);
     if (!dir) {
-        error("CONFIG cannot open stock config directory '%s'.", sdir);
+        netdata_log_error("CONFIG cannot open stock config directory '%s'.", sdir);
     }
     else {
         if (strcmp(udir, sdir)) {
@@ -1427,7 +1586,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                         (de->d_name[0] == '.' && de->d_name[1] == '\0') ||
                         (de->d_name[0] == '.' && de->d_name[1] == '.' && de->d_name[2] == '\0')
                         ) {
-                        debug(D_HEALTH, "CONFIG ignoring stock config directory '%s/%s'", sdir, de->d_name);
+                        netdata_log_debug(D_HEALTH, "CONFIG ignoring stock config directory '%s/%s'", sdir, de->d_name);
                         continue;
                     }
 
@@ -1447,7 +1606,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                     if(path_is_file(sdir, de->d_name) && !path_is_file(udir, de->d_name) &&
                         len > 5 && !strcmp(&de->d_name[len - 5], ".conf")) {
                         char *filename = strdupz_path_subpath(sdir, de->d_name);
-                        debug(D_HEALTH, "CONFIG calling callback for stock file '%s'", filename);
+                        netdata_log_debug(D_HEALTH, "CONFIG calling callback for stock file '%s'", filename);
                         callback(filename, data);
                         freez(filename);
                         continue;
@@ -1455,13 +1614,13 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
 
                 }
 
-                debug(D_HEALTH, "CONFIG ignoring stock-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
+                netdata_log_debug(D_HEALTH, "CONFIG ignoring stock-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
             }
         }
         closedir(dir);
     }
 
-    debug(D_HEALTH, "CONFIG done traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
+    netdata_log_debug(D_HEALTH, "CONFIG done traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
 
     freez(udir);
     freez(sdir);
@@ -1469,7 +1628,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
 
 // Returns the number of bytes read from the file if file_size is not NULL.
 // The actual buffer has an extra byte set to zero (not included in the count).
-char *read_by_filename(char *filename, long *file_size)
+char *read_by_filename(const char *filename, long *file_size)
 {
     FILE *f = fopen(filename, "r");
     if (!f)
@@ -1535,18 +1694,422 @@ char *find_and_replace(const char *src, const char *find, const char *replace, c
     return value;
 }
 
+inline int pluginsd_isspace(char c) {
+    switch(c) {
+        case ' ':
+        case '\t':
+        case '\r':
+        case '\n':
+        case '=':
+            return 1;
 
-bool bitmap256_get_bit(BITMAP256 *ptr, uint8_t idx) {
-    if (unlikely(!ptr))
-        return false;
-    return (ptr->data[idx / 64] & (1ULL << (idx % 64)));
+        default:
+            return 0;
+    }
 }
 
-void bitmap256_set_bit(BITMAP256 *ptr, uint8_t idx, bool value) {
-    if (unlikely(!ptr))
-        return;
-    if (likely(value))
-        ptr->data[idx / 64] |= (1ULL << (idx % 64));
-    else
-        ptr->data[idx / 64] &= ~(1ULL << (idx % 64));
+inline int config_isspace(char c) {
+    switch (c) {
+        case ' ':
+        case '\t':
+        case '\r':
+        case '\n':
+        case ',':
+            return 1;
+
+        default:
+            return 0;
+    }
+}
+
+inline int group_by_label_isspace(char c) {
+    if(c == ',' || c == '|')
+        return 1;
+
+    return 0;
+}
+
+bool isspace_map_pluginsd[256] = {};
+bool isspace_map_config[256] = {};
+bool isspace_map_group_by_label[256] = {};
+
+__attribute__((constructor)) void initialize_is_space_arrays(void) {
+    for(int c = 0; c < 256 ; c++) {
+        isspace_map_pluginsd[c] = pluginsd_isspace((char) c);
+        isspace_map_config[c] = config_isspace((char) c);
+        isspace_map_group_by_label[c] = group_by_label_isspace((char) c);
+    }
+}
+
+bool run_command_and_copy_output_to_stdout(const char *command, int max_line_length) {
+    pid_t pid;
+    FILE *fp = netdata_popen(command, &pid, NULL);
+
+    if(fp) {
+        char buffer[max_line_length + 1];
+        while (fgets(buffer, max_line_length, fp))
+            fprintf(stdout, "%s", buffer);
+    }
+    else {
+        netdata_log_error("Failed to execute command '%s'.", command);
+        return false;
+    }
+
+    netdata_pclose(NULL, fp, pid);
+    return true;
+}
+
+void for_each_open_fd(OPEN_FD_ACTION action, OPEN_FD_EXCLUDE excluded_fds){
+    int fd;
+
+    switch(action){
+        case OPEN_FD_ACTION_CLOSE:
+            if(!(excluded_fds & OPEN_FD_EXCLUDE_STDIN))  (void)close(STDIN_FILENO);
+            if(!(excluded_fds & OPEN_FD_EXCLUDE_STDOUT)) (void)close(STDOUT_FILENO);
+            if(!(excluded_fds & OPEN_FD_EXCLUDE_STDERR)) (void)close(STDERR_FILENO);
+#if defined(HAVE_CLOSE_RANGE)
+            if(close_range(STDERR_FILENO + 1, ~0U, 0) == 0) return;
+            netdata_log_error("close_range() failed, will try to close fds one by one");
+#endif
+            break;
+        case OPEN_FD_ACTION_FD_CLOEXEC:
+            if(!(excluded_fds & OPEN_FD_EXCLUDE_STDIN))  (void)fcntl(STDIN_FILENO, F_SETFD, FD_CLOEXEC);
+            if(!(excluded_fds & OPEN_FD_EXCLUDE_STDOUT)) (void)fcntl(STDOUT_FILENO, F_SETFD, FD_CLOEXEC);
+            if(!(excluded_fds & OPEN_FD_EXCLUDE_STDERR)) (void)fcntl(STDERR_FILENO, F_SETFD, FD_CLOEXEC);
+#if defined(HAVE_CLOSE_RANGE) && defined(CLOSE_RANGE_CLOEXEC) // Linux >= 5.11, FreeBSD >= 13.1
+            if(close_range(STDERR_FILENO + 1, ~0U, CLOSE_RANGE_CLOEXEC) == 0) return;
+            netdata_log_error("close_range() failed, will try to mark fds for closing one by one");
+#endif
+            break;
+        default:
+            break; // do nothing
+    }
+
+    DIR *dir = opendir("/proc/self/fd");
+    if (dir == NULL) {
+        struct rlimit rl;
+        int open_max = -1;
+
+        if(getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_max != RLIM_INFINITY) open_max = rl.rlim_max;
+#ifdef _SC_OPEN_MAX
+        else open_max = sysconf(_SC_OPEN_MAX);
+#endif
+
+        if (open_max == -1) open_max = 65535; // 65535 arbitrary default if everything else fails
+
+        for (fd = STDERR_FILENO + 1; fd < open_max; fd++) {
+            switch(action){
+                case OPEN_FD_ACTION_CLOSE:
+                    if(fd_is_valid(fd)) (void)close(fd);
+                    break;
+                case OPEN_FD_ACTION_FD_CLOEXEC:
+                    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+                    break;
+                default:
+                    break; // do nothing
+            }
+        }
+    } else {
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            fd = str2i(entry->d_name);
+            if(unlikely((fd == STDIN_FILENO ) || (fd == STDOUT_FILENO) || (fd == STDERR_FILENO) )) continue;
+            switch(action){
+                case OPEN_FD_ACTION_CLOSE:
+                    if(fd_is_valid(fd)) (void)close(fd);
+                    break;
+                case OPEN_FD_ACTION_FD_CLOEXEC:
+                    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+                    break;
+                default:
+                    break; // do nothing
+            }
+        }
+        closedir(dir);
+    }
+}
+
+struct timing_steps {
+    const char *name;
+    usec_t time;
+    size_t count;
+} timing_steps[TIMING_STEP_MAX + 1] = {
+        [TIMING_STEP_INTERNAL] = { .name = "internal", .time = 0, },
+
+        [TIMING_STEP_BEGIN2_PREPARE] = { .name = "BEGIN2 prepare", .time = 0, },
+        [TIMING_STEP_BEGIN2_FIND_CHART] = { .name = "BEGIN2 find chart", .time = 0, },
+        [TIMING_STEP_BEGIN2_PARSE] = { .name = "BEGIN2 parse", .time = 0, },
+        [TIMING_STEP_BEGIN2_ML] = { .name = "BEGIN2 ml", .time = 0, },
+        [TIMING_STEP_BEGIN2_PROPAGATE] = { .name = "BEGIN2 propagate", .time = 0, },
+        [TIMING_STEP_BEGIN2_STORE] = { .name = "BEGIN2 store", .time = 0, },
+
+        [TIMING_STEP_SET2_PREPARE] = { .name = "SET2 prepare", .time = 0, },
+        [TIMING_STEP_SET2_LOOKUP_DIMENSION] = { .name = "SET2 find dimension", .time = 0, },
+        [TIMING_STEP_SET2_PARSE] = { .name = "SET2 parse", .time = 0, },
+        [TIMING_STEP_SET2_ML] = { .name = "SET2 ml", .time = 0, },
+        [TIMING_STEP_SET2_PROPAGATE] = { .name = "SET2 propagate", .time = 0, },
+        [TIMING_STEP_RRDSET_STORE_METRIC] = { .name = "SET2 rrdset store", .time = 0, },
+        [TIMING_STEP_DBENGINE_FIRST_CHECK] = { .name = "db 1st check", .time = 0, },
+        [TIMING_STEP_DBENGINE_CHECK_DATA] = { .name = "db check data", .time = 0, },
+        [TIMING_STEP_DBENGINE_PACK] = { .name = "db pack", .time = 0, },
+        [TIMING_STEP_DBENGINE_PAGE_FIN] = { .name = "db page fin", .time = 0, },
+        [TIMING_STEP_DBENGINE_MRG_UPDATE] = { .name = "db mrg update", .time = 0, },
+        [TIMING_STEP_DBENGINE_PAGE_ALLOC] = { .name = "db page alloc", .time = 0, },
+        [TIMING_STEP_DBENGINE_CREATE_NEW_PAGE] = { .name = "db new page", .time = 0, },
+        [TIMING_STEP_DBENGINE_FLUSH_PAGE] = { .name = "db page flush", .time = 0, },
+        [TIMING_STEP_SET2_STORE] = { .name = "SET2 store", .time = 0, },
+
+        [TIMING_STEP_END2_PREPARE] = { .name = "END2 prepare", .time = 0, },
+        [TIMING_STEP_END2_PUSH_V1] = { .name = "END2 push v1", .time = 0, },
+        [TIMING_STEP_END2_ML] = { .name = "END2 ml", .time = 0, },
+        [TIMING_STEP_END2_RRDSET] = { .name = "END2 rrdset", .time = 0, },
+        [TIMING_STEP_END2_PROPAGATE] = { .name = "END2 propagate", .time = 0, },
+        [TIMING_STEP_END2_STORE] = { .name = "END2 store", .time = 0, },
+
+        // terminator
+        [TIMING_STEP_MAX] = { .name = NULL, .time = 0, },
+};
+
+void timing_action(TIMING_ACTION action, TIMING_STEP step) {
+    static __thread usec_t last_action_time = 0;
+    static struct timing_steps timings2[TIMING_STEP_MAX + 1] = {};
+
+    switch(action) {
+        case TIMING_ACTION_INIT:
+            last_action_time = now_monotonic_usec();
+            break;
+
+        case TIMING_ACTION_STEP: {
+            if(!last_action_time)
+                return;
+
+            usec_t now = now_monotonic_usec();
+            __atomic_add_fetch(&timing_steps[step].time, now - last_action_time, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&timing_steps[step].count, 1, __ATOMIC_RELAXED);
+            last_action_time = now;
+            break;
+        }
+
+        case TIMING_ACTION_FINISH: {
+            if(!last_action_time)
+                return;
+
+            usec_t expected = __atomic_load_n(&timing_steps[TIMING_STEP_INTERNAL].time, __ATOMIC_RELAXED);
+            if(last_action_time - expected < 10 * USEC_PER_SEC) {
+                last_action_time = 0;
+                return;
+            }
+
+            if(!__atomic_compare_exchange_n(&timing_steps[TIMING_STEP_INTERNAL].time, &expected, last_action_time, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+                last_action_time = 0;
+                return;
+            }
+
+            struct timing_steps timings3[TIMING_STEP_MAX + 1];
+            memcpy(timings3, timing_steps, sizeof(timings3));
+
+            size_t total_reqs = 0;
+            usec_t total_usec = 0;
+            for(size_t t = 1; t < TIMING_STEP_MAX ; t++) {
+                total_usec += timings3[t].time - timings2[t].time;
+                total_reqs += timings3[t].count - timings2[t].count;
+            }
+
+            BUFFER *wb = buffer_create(1024, NULL);
+
+            for(size_t t = 1; t < TIMING_STEP_MAX ; t++) {
+                size_t requests = timings3[t].count - timings2[t].count;
+                if(!requests) continue;
+
+                buffer_sprintf(wb, "TIMINGS REPORT: [%3zu. %-20s]: # %10zu, t %11.2f ms (%6.2f %%), avg %6.2f usec/run\n",
+                               t,
+                               timing_steps[t].name ? timing_steps[t].name : "x",
+                               requests,
+                               (double) (timings3[t].time - timings2[t].time) / (double)USEC_PER_MS,
+                               (double) (timings3[t].time - timings2[t].time) * 100.0 / (double) total_usec,
+                               (double) (timings3[t].time - timings2[t].time) / (double)requests
+                );
+            }
+
+            netdata_log_info("TIMINGS REPORT:\n%sTIMINGS REPORT:                        total # %10zu, t %11.2f ms",
+                 buffer_tostring(wb), total_reqs, (double)total_usec / USEC_PER_MS);
+
+            memcpy(timings2, timings3, sizeof(timings2));
+
+            last_action_time = 0;
+            buffer_free(wb);
+        }
+    }
+}
+
+#ifdef ENABLE_HTTPS
+int hash256_string(const unsigned char *string, size_t size, char *hash) {
+    EVP_MD_CTX *ctx;
+    ctx = EVP_MD_CTX_create();
+
+    if (!ctx)
+        return 0;
+
+    if (!EVP_DigestInit(ctx, EVP_sha256())) {
+        EVP_MD_CTX_destroy(ctx);
+        return 0;
+    }
+
+    if (!EVP_DigestUpdate(ctx, string, size)) {
+        EVP_MD_CTX_destroy(ctx);
+        return 0;
+    }
+
+    if (!EVP_DigestFinal(ctx, (unsigned char *)hash, NULL)) {
+        EVP_MD_CTX_destroy(ctx);
+        return 0;
+    }
+    EVP_MD_CTX_destroy(ctx);
+    return 1;
+}
+#endif
+
+
+bool rrdr_relative_window_to_absolute(time_t *after, time_t *before, time_t now) {
+    if(!now) now = now_realtime_sec();
+
+    int absolute_period_requested = -1;
+    time_t before_requested = *before;
+    time_t after_requested = *after;
+
+    // allow relative for before (smaller than API_RELATIVE_TIME_MAX)
+    if(ABS(before_requested) <= API_RELATIVE_TIME_MAX) {
+        // if the user asked for a positive relative time,
+        // flip it to a negative
+        if(before_requested > 0)
+            before_requested = -before_requested;
+
+        before_requested = now + before_requested;
+        absolute_period_requested = 0;
+    }
+
+    // allow relative for after (smaller than API_RELATIVE_TIME_MAX)
+    if(ABS(after_requested) <= API_RELATIVE_TIME_MAX) {
+        if(after_requested > 0)
+            after_requested = -after_requested;
+
+        // if the user didn't give an after, use the number of points
+        // to give a sane default
+        if(after_requested == 0)
+            after_requested = -600;
+
+        // since the query engine now returns inclusive timestamps
+        // it is awkward to return 6 points when after=-5 is given
+        // so for relative queries we add 1 second, to give
+        // more predictable results to users.
+        after_requested = before_requested + after_requested + 1;
+        absolute_period_requested = 0;
+    }
+
+    if(absolute_period_requested == -1)
+        absolute_period_requested = 1;
+
+    // check if the parameters are flipped
+    if(after_requested > before_requested) {
+        long long t = before_requested;
+        before_requested = after_requested;
+        after_requested = t;
+    }
+
+    // if the query requests future data
+    // shift the query back to be in the present time
+    // (this may also happen because of the rules above)
+    if(before_requested > now) {
+        time_t delta = before_requested - now;
+        before_requested -= delta;
+        after_requested  -= delta;
+    }
+
+    *before = before_requested;
+    *after = after_requested;
+
+    return (absolute_period_requested != 1);
+}
+
+// Returns 1 if an absolute period was requested or 0 if it was a relative period
+bool rrdr_relative_window_to_absolute_query(time_t *after, time_t *before, time_t *now_ptr, bool unittest_running) {
+    time_t now = now_realtime_sec() - 1;
+
+    if(now_ptr)
+        *now_ptr = now;
+
+    time_t before_requested = *before;
+    time_t after_requested = *after;
+
+    int absolute_period_requested = rrdr_relative_window_to_absolute(&after_requested, &before_requested, now);
+
+    time_t absolute_minimum_time = now - (10 * 365 * 86400);
+    time_t absolute_maximum_time = now + (1 * 365 * 86400);
+
+    if (after_requested < absolute_minimum_time && !unittest_running)
+        after_requested = absolute_minimum_time;
+
+    if (after_requested > absolute_maximum_time && !unittest_running)
+        after_requested = absolute_maximum_time;
+
+    if (before_requested < absolute_minimum_time && !unittest_running)
+        before_requested = absolute_minimum_time;
+
+    if (before_requested > absolute_maximum_time && !unittest_running)
+        before_requested = absolute_maximum_time;
+
+    *before = before_requested;
+    *after = after_requested;
+
+    return (absolute_period_requested != 1);
+}
+
+int netdata_base64_decode(const char *encoded, char *decoded, size_t decoded_size) {
+    static const unsigned char base64_table[256] = {
+            ['A'] = 0, ['B'] = 1, ['C'] = 2, ['D'] = 3, ['E'] = 4, ['F'] = 5, ['G'] = 6, ['H'] = 7,
+            ['I'] = 8, ['J'] = 9, ['K'] = 10, ['L'] = 11, ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15,
+            ['Q'] = 16, ['R'] = 17, ['S'] = 18, ['T'] = 19, ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
+            ['Y'] = 24, ['Z'] = 25, ['a'] = 26, ['b'] = 27, ['c'] = 28, ['d'] = 29, ['e'] = 30, ['f'] = 31,
+            ['g'] = 32, ['h'] = 33, ['i'] = 34, ['j'] = 35, ['k'] = 36, ['l'] = 37, ['m'] = 38, ['n'] = 39,
+            ['o'] = 40, ['p'] = 41, ['q'] = 42, ['r'] = 43, ['s'] = 44, ['t'] = 45, ['u'] = 46, ['v'] = 47,
+            ['w'] = 48, ['x'] = 49, ['y'] = 50, ['z'] = 51, ['0'] = 52, ['1'] = 53, ['2'] = 54, ['3'] = 55,
+            ['4'] = 56, ['5'] = 57, ['6'] = 58, ['7'] = 59, ['8'] = 60, ['9'] = 61, ['+'] = 62, ['/'] = 63,
+            [0 ... '+' - 1] = 255,
+            ['+' + 1 ... '/' - 1] = 255,
+            ['9' + 1 ... 'A' - 1] = 255,
+            ['Z' + 1 ... 'a' - 1] = 255,
+            ['z' + 1 ... 255] = 255
+    };
+
+    size_t count = 0;
+    unsigned int tmp = 0;
+    int i, bit;
+
+    if (decoded_size < 1)
+        return 0; // Buffer size must be at least 1 for null termination
+
+    for (i = 0, bit = 0; encoded[i]; i++) {
+        unsigned char value = base64_table[(unsigned char)encoded[i]];
+        if (value > 63)
+            return -1; // Invalid character in input
+
+        tmp = tmp << 6 | value;
+        if (++bit == 4) {
+            if (count + 3 >= decoded_size) break; // Stop decoding if buffer is full
+            decoded[count++] = (tmp >> 16) & 0xFF;
+            decoded[count++] = (tmp >> 8) & 0xFF;
+            decoded[count++] = tmp & 0xFF;
+            tmp = 0;
+            bit = 0;
+        }
+    }
+
+    if (bit > 0 && count + 1 < decoded_size) {
+        tmp <<= 6 * (4 - bit);
+        if (bit > 2 && count + 1 < decoded_size) decoded[count++] = (tmp >> 16) & 0xFF;
+        if (bit > 3 && count + 1 < decoded_size) decoded[count++] = (tmp >> 8) & 0xFF;
+    }
+
+    decoded[count] = '\0'; // Null terminate the output string
+    return count;
 }

@@ -3,13 +3,14 @@
 #ifndef NETDATA_PROC_PRESSURE_H
 #define NETDATA_PROC_PRESSURE_H
 
-#define PRESSURE_NUM_RESOURCES 3
+#define PRESSURE_NUM_RESOURCES 4
 
 struct pressure {
     int updated;
     char *filename;
 
     struct pressure_charts {
+        bool available;
         int enabled;
 
         struct pressure_share_time_chart {
@@ -38,6 +39,6 @@ struct pressure {
     } some, full;
 };
 
-extern void update_pressure_charts(struct pressure_charts *charts);
+void update_pressure_charts(struct pressure_charts *charts);
 
 #endif //NETDATA_PROC_PRESSURE_H

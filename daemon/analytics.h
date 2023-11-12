@@ -18,7 +18,7 @@
 #define ANALYTICS_MAX_DASHBOARD_HITS 255
 
 /* Needed to calculate the space needed for parameters */
-#define ANALYTICS_NO_OF_ITEMS 39
+#define ANALYTICS_NO_OF_ITEMS 40
 
 struct analytics_data {
     char *netdata_config_stream_enabled;
@@ -60,27 +60,32 @@ struct analytics_data {
     char *netdata_config_use_private_registry;
     char *netdata_config_oom_score;
     char *netdata_prebuilt_distro;
+    char *netdata_fail_reason;
 
     size_t data_length;
 
-    uint8_t prometheus_hits;
-    uint8_t shell_hits;
-    uint8_t json_hits;
-    uint8_t dashboard_hits;
+    size_t prometheus_hits;
+    size_t shell_hits;
+    size_t json_hits;
+    size_t dashboard_hits;
+
+    size_t charts_count;
+    size_t metrics_count;
+
+    bool exporting_enabled;
 };
 
-extern void analytics_get_data(char *name, BUFFER *wb);
-extern void set_late_global_environment(void);
-extern void analytics_free_data(void);
-extern void set_global_environment(void);
-extern void send_statistics(const char *action, const char *action_result, const char *action_data);
-extern void analytics_log_shell(void);
-extern void analytics_log_json(void);
-extern void analytics_log_prometheus(void);
-extern void analytics_log_dashboard(void);
-extern void analytics_gather_mutable_meta_data(void);
-extern void analytics_report_oom_score(long long int score);
-extern void get_system_timezone(void);
+void set_late_global_environment(struct rrdhost_system_info *system_info);
+void analytics_free_data(void);
+void set_global_environment(void);
+void send_statistics(const char *action, const char *action_result, const char *action_data);
+void analytics_log_shell(void);
+void analytics_log_json(void);
+void analytics_log_prometheus(void);
+void analytics_log_dashboard(void);
+void analytics_gather_mutable_meta_data(void);
+void analytics_report_oom_score(long long int score);
+void get_system_timezone(void);
 
 extern struct analytics_data analytics_data;
 

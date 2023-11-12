@@ -1,8 +1,3 @@
-<!--
-title: "Running Netdata behind Nginx"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/docs/Running-behind-nginx.md
--->
-
 # Running Netdata behind Nginx
 
 ## Intro
@@ -47,7 +42,7 @@ With this method instead of `SERVER_IP_ADDRESS:19999`, the Netdata dashboard can
 upstream backend {
     # the Netdata server
     server 127.0.0.1:19999;
-    keepalive 64;
+    keepalive 1024;
 }
 
 server {
@@ -169,7 +164,7 @@ Using the above, you access Netdata on the backend servers, like this:
 
 ### Encrypt the communication between Nginx and Netdata
 
-In case Netdata's web server has been [configured to use TLS](/web/server/README.md#enabling-tls-support), it is
+In case Netdata's web server has been [configured to use TLS](https://github.com/netdata/netdata/blob/master/web/server/README.md#enabling-tls-support), it is
 necessary to specify inside the Nginx configuration that the final destination is using TLS. To do this, please, append
 the following parameters in your `nginx.conf`
 
@@ -212,8 +207,6 @@ If your Nginx is on `localhost`, you can use this to protect your Netdata:
     bind to = 127.0.0.1 ::1
 ```
 
----
-
 You can also use a unix domain socket. This will also provide a faster route between Nginx and Netdata:
 
 ```
@@ -232,7 +225,6 @@ upstream backend {
 }
 ```
 
----
 
 If your Nginx server is not on localhost, you can set:
 
@@ -244,7 +236,7 @@ If your Nginx server is not on localhost, you can set:
 
 *note: Netdata v1.9+ support `allow connections from`*
 
-`allow connections from` accepts [Netdata simple patterns](/libnetdata/simple_pattern/README.md) to match against the
+`allow connections from` accepts [Netdata simple patterns](https://github.com/netdata/netdata/blob/master/libnetdata/simple_pattern/README.md) to match against the
 connection IP address.
 
 ## Prevent the double access.log
@@ -254,6 +246,26 @@ Nginx logs accesses and Netdata logs them too. You can prevent Netdata from gene
 ```
 [global]
       access log = none
+```
+
+## Use gzip compression
+
+By default, netdata compresses its responses. You can have nginx do that instead, with the following options in the `location /` block:
+
+```conf
+  location / {
+		...
+		gzip on;
+		gzip_proxied any;
+		gzip_types *;
+	}
+```
+
+To disable Netdata's gzip compression, open `netdata.conf` and in the `[web]` section put:
+
+```conf
+[web]
+    enable gzip compression = no
 ```
 
 ## SELinux

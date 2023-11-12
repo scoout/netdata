@@ -3,8 +3,9 @@
 #ifndef NETDATA_EBPF_CACHESTAT_H
 #define NETDATA_EBPF_CACHESTAT_H 1
 
-// Module name
+// Module name & description
 #define NETDATA_EBPF_MODULE_NAME_CACHESTAT "cachestat"
+#define NETDATA_EBPF_CACHESTAT_MODULE_DESC "Monitor Linux page cache internal functions. This thread is integrated with apps and cgroup."
 
 // charts
 #define NETDATA_CACHESTAT_HIT_RATIO_CHART "cachestat_ratio"
@@ -18,8 +19,6 @@
 #define EBPF_CACHESTAT_DIMENSION_PAGE "pages/s"
 #define EBPF_CACHESTAT_DIMENSION_HITS "hits/s"
 #define EBPF_CACHESTAT_DIMENSION_MISSES "misses/s"
-
-#define NETDATA_LATENCY_CACHESTAT_SLEEP_MS 600000ULL
 
 // configuration file
 #define NETDATA_CACHESTAT_CONFIG_FILE "cachestat.conf"
@@ -35,6 +34,9 @@
 #define NETDATA_SYSTEMD_CACHESTAT_HIT_FILE_CONTEXT "services.cachestat_hits"
 #define NETDATA_SYSTEMD_CACHESTAT_MISS_FILES_CONTEXT "services.cachestat_misses"
 
+// ARAL Name
+#define NETDATA_EBPF_CACHESTAT_ARAL_NAME "ebpf_cachestat"
+
 // variables
 enum cachestat_counters {
     NETDATA_KEY_CALLS_ADD_TO_PAGE_CACHE_LRU,
@@ -48,7 +50,9 @@ enum cachestat_counters {
 enum cachestat_account_dirty_pages {
     NETDATA_CACHESTAT_ACCOUNT_PAGE_DIRTY,
     NETDATA_CACHESTAT_SET_PAGE_DIRTY,
-    NETDATA_CACHESTAT_FOLIO_DIRTY
+    NETDATA_CACHESTAT_FOLIO_DIRTY,
+
+    NETDATA_CACHESTAT_ACCOUNT_DIRTY_END
 };
 
 enum cachestat_indexes {
@@ -81,7 +85,8 @@ typedef struct netdata_publish_cachestat {
     netdata_cachestat_pid_t prev;
 } netdata_publish_cachestat_t;
 
-extern void *ebpf_cachestat_thread(void *ptr);
+void *ebpf_cachestat_thread(void *ptr);
+void ebpf_cachestat_release(netdata_publish_cachestat_t *stat);
 
 extern struct config cachestat_config;
 extern netdata_ebpf_targets_t cachestat_targets[];

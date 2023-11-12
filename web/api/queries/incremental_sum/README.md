@@ -1,6 +1,10 @@
 <!--
 title: "Incremental Sum (`incremental_sum`)"
+sidebar_label: "Incremental Sum (`incremental_sum`)"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/queries/incremental_sum/README.md
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api/Queries"
 -->
 
 # Incremental Sum (`incremental_sum`)
@@ -11,10 +15,10 @@ The result may be positive (rising) or negative (falling) depending on the first
 
 ## how to use
 
-Use it in alarms like this:
+Use it in alerts like this:
 
 ```
- alarm: my_alarm
+ alarm: my_alert
     on: my_chart
 lookup: incremental_sum -1m unaligned of my_dimension
   warn: $this > 1000

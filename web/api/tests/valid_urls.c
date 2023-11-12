@@ -19,19 +19,6 @@ void *__wrap_free_temporary_host(RRDHOST *host)
     return NULL;
 }
 
-
-RRDHOST *sql_create_host_by_uuid(char *hostname)
-{
-    (void) hostname;
-    return NULL;
-}
-
-RRDHOST *__wrap_sql_create_host_by_uuid(char *hostname)
-{
-    (void) hostname;
-    return NULL;
-}
-
 void repr(char *result, int result_size, char const *buf, int size)
 {
     int n;
@@ -59,7 +46,7 @@ void repr(char *result, int result_size, char const *buf, int size)
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags)
 {
-    info("Mocking send: %zu bytes\n", len);
+    netdata_log_info("Mocking send: %zu bytes\n", len);
     (void)sockfd;
     (void)buf;
     (void)flags;

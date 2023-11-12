@@ -1,13 +1,18 @@
 <!--
 title: "Monitor CockroachDB metrics with Netdata"
+sidebar_label: "Monitor CockroachDB metrics with Netdata"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/docs/guides/monitor-cockroachdb.md
+learn_status: "Published"
+learn_topic_type: "Tasks"
+learn_rel_path: "Miscellaneous"
 -->
 
 # Monitor CockroachDB metrics with Netdata
 
 [CockroachDB](https://github.com/cockroachdb/cockroach) is an open-source project that brings SQL databases into
-scalable, disaster-resilient cloud deployments. Thanks to a [new CockroachDB
-collector](https://learn.netdata.cloud/docs/agent/collectors/go.d.plugin/modules/cockroachdb/) released in
+scalable, disaster-resilient cloud deployments. Thanks to
+a [new CockroachDB collector](https://github.com/netdata/go.d.plugin/blob/master/modules/cockroachdb/README.md)
+released in
 [v1.20](https://blog.netdata.cloud/posts/release-1.20/), you can now monitor any number of CockroachDB databases with
 maximum granularity using Netdata. Collect more than 50 unique metrics and put them on interactive visualizations
 designed for better visual anomaly detection.
@@ -19,9 +24,11 @@ Let's dive in and walk through the process of monitoring CockroachDB metrics wit
 
 ## What's in this guide
 
--   [Configure the CockroachDB collector](#configure-the-cockroachdb-collector)
-    -   [Manual setup for a local CockroachDB database](#manual-setup-for-a-local-cockroachdb-database)
--   [Tweak CockroachDB alarms](#tweak-cockroachdb-alarms)
+- [Monitor CockroachDB metrics with Netdata](#monitor-cockroachdb-metrics-with-netdata)
+  - [What's in this guide](#whats-in-this-guide)
+  - [Configure the CockroachDB collector](#configure-the-cockroachdb-collector)
+    - [Manual setup for a local CockroachDB database](#manual-setup-for-a-local-cockroachdb-database)
+  - [Tweak CockroachDB alerts](#tweak-cockroachdb-alerts)
 
 ## Configure the CockroachDB collector
 
@@ -31,7 +38,7 @@ display them on the dashboard.
 
 If your CockroachDB instance is accessible through `http://localhost:8080/` or `http://127.0.0.1:8080`, your setup is
 complete. Restart Netdata with `sudo systemctl restart netdata`, or the [appropriate
-method](/docs/configure/start-stop-restart.md) for your system, and refresh your browser. You should see CockroachDB
+method](https://github.com/netdata/netdata/blob/master/docs/configure/start-stop-restart.md) for your system, and refresh your browser. You should see CockroachDB
 metrics in your Netdata dashboard!
 
 <figure>
@@ -59,8 +66,8 @@ edit, or create a new job with any of the parameters listed above in the file. B
 required, and everything else is optional.
 
 For a production cluster, you'll use either an IP address or the system's hostname. Be sure that your remote system
-allows TCP communication on port 8080, or whichever port you have configured CockroachDB's [Admin
-UI](https://www.cockroachlabs.com/docs/stable/monitoring-and-alerting.html#prometheus-endpoint) to listen on.
+allows TCP communication on port 8080, or whichever port you have configured CockroachDB's 
+[Admin UI](https://www.cockroachlabs.com/docs/stable/monitoring-and-alerting.html#prometheus-endpoint) to listen on.
 
 ```yaml
 # [ JOBS ]
@@ -80,7 +87,7 @@ jobs:
   - name: remote
     url: https://203.0.113.0:8080/_status/vars
     tls_skip_verify: yes # If your certificate is self-signed
-    
+
   - name: remote_hostname
     url: https://cockroachdb.example.com:8080/_status/vars
     tls_skip_verify: yes # If your certificate is self-signed
@@ -95,9 +102,9 @@ Netdata to see your new charts.
   <figcaption>Charts showing a node failure during a simulated test</figcaption>
 </figure>
 
-## Tweak CockroachDB alarms
+## Tweak CockroachDB alerts
 
-This release also includes eight pre-configured alarms for live nodes, such as whether the node is live, storage
+This release also includes eight pre-configured alerts for live nodes, such as whether the node is live, storage
 capacity, issues with replication, and the number of SQL connections/statements. See [health.d/cockroachdb.conf on
 GitHub](https://raw.githubusercontent.com/netdata/netdata/master/health/health.d/cockroachdb.conf) for details.
 
@@ -108,29 +115,4 @@ cd /etc/netdata/ # Replace with your Netdata configuration directory, if not /et
 ./edit-config health.d/cockroachdb.conf # You may need to use `sudo` for write privileges
 ```
 
-For more information about editing the defaults or writing new alarm entities, see our health monitoring [quickstart
-guide](/health/QUICKSTART.md).
-
-## What's next?
-
-Now that you're collecting metrics from your CockroachDB databases, let us know how it's working for you! There's always
-room for improvement or refinement based on real-world use cases. Feel free to [file an
-issue](https://github.com/netdata/netdata/issues/new?assignees=&labels=bug%2Cneeds+triage&template=BUG_REPORT.yml) with your
-thoughts.
-
-Also, be sure to check out these useful resources:
-
--   [Netdata's CockroachDB
-    documentation](https://learn.netdata.cloud/docs/agent/collectors/go.d.plugin/modules/cockroachdb/)
--   [Netdata's CockroachDB
-    configuration](https://github.com/netdata/go.d.plugin/blob/master/config/go.d/cockroachdb.conf)
--   [Netdata's CockroachDB
-    alarms](https://github.com/netdata/netdata/blob/29d9b5e51603792ee27ef5a21f1de0ba8e130158/health/health.d/cockroachdb.conf)
--   [CockroachDB homepage](https://www.cockroachlabs.com/product/)
--   [CockroachDB documentation](https://www.cockroachlabs.com/docs/stable/)
--   [`_status/vars` endpoint
-    docs](https://www.cockroachlabs.com/docs/stable/monitoring-and-alerting.html#prometheus-endpoint)
--   [Monitor CockroachDB with
-    Prometheus](https://www.cockroachlabs.com/docs/stable/monitor-cockroachdb-with-prometheus.html)
-
-
+For more information about editing the defaults or writing new alert entities, see our documentation on [configuring health alerts](https://github.com/netdata/netdata/blob/master/health/REFERENCE.md).

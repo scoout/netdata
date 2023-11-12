@@ -61,71 +61,86 @@ static void rrdr_dump(RRDR *r)
 inline void rrdr_free(ONEWAYALLOC *owa, RRDR *r) {
     if(unlikely(!r)) return;
 
-    if(likely(r->st_locked_by_rrdr_create))
-        rrdset_unlock(r->st);
+    for(size_t d = 0; d < r->d ;d++) {
+        string_freez(r->di[d]);
+        string_freez(r->dn[d]);
+        string_freez(r->du[d]);
+    }
+
+    query_target_release(r->internal.release_with_rrdr_qt);
 
     onewayalloc_freez(owa, r->t);
     onewayalloc_freez(owa, r->v);
+    onewayalloc_freez(owa, r->vh);
     onewayalloc_freez(owa, r->o);
     onewayalloc_freez(owa, r->od);
+    onewayalloc_freez(owa, r->di);
+    onewayalloc_freez(owa, r->dn);
+    onewayalloc_freez(owa, r->du);
+    onewayalloc_freez(owa, r->dp);
+    onewayalloc_freez(owa, r->dview);
+    onewayalloc_freez(owa, r->dqp);
     onewayalloc_freez(owa, r->ar);
+    onewayalloc_freez(owa, r->gbc);
+    onewayalloc_freez(owa, r->dgbc);
+    onewayalloc_freez(owa, r->dgbs);
+
+    if(r->dl) {
+        for(size_t d = 0; d < r->d ;d++)
+            dictionary_destroy(r->dl[d]);
+
+        onewayalloc_freez(owa, r->dl);
+    }
+
+    dictionary_destroy(r->label_keys);
+
+    if(r->group_by.r) {
+        // prevent accidental infinite recursion
+        r->group_by.r->group_by.r = NULL;
+
+        // do not release qt twice
+        r->group_by.r->internal.qt = NULL;
+
+        rrdr_free(owa, r->group_by.r);
+    }
+
     onewayalloc_freez(owa, r);
 }
 
-RRDR *rrdr_create_for_x_dimensions(ONEWAYALLOC *owa, int dimensions, long points) {
-    RRDR *r = onewayalloc_callocz(owa, 1, sizeof(RRDR));
-    r->internal.owa = owa;
-
-    r->d = dimensions;
-    r->n = points;
-
-    r->t = onewayalloc_callocz(owa, points, sizeof(time_t));
-    r->v = onewayalloc_mallocz(owa, points * dimensions * sizeof(NETDATA_DOUBLE));
-    r->o = onewayalloc_mallocz(owa, points * dimensions * sizeof(RRDR_VALUE_FLAGS));
-    r->ar = onewayalloc_mallocz(owa, points * dimensions * sizeof(NETDATA_DOUBLE));
-    r->od = onewayalloc_mallocz(owa, dimensions * sizeof(RRDR_DIMENSION_FLAGS));
-
-    r->group = 1;
-    r->update_every = 1;
-
-    return r;
-}
-
-RRDR *rrdr_create(ONEWAYALLOC *owa, struct rrdset *st, long n, struct context_param *context_param_list) {
-    if (unlikely(!st)) return NULL;
-
-    bool st_locked_by_rrdr_create = false;
-    if (!context_param_list || !(context_param_list->flags & CONTEXT_FLAGS_ARCHIVE)) {
-        rrdset_rdlock(st);
-        st_locked_by_rrdr_create = true;
-    }
-
-    // count the number of dimensions
-    int dimensions = 0;
-    RRDDIM *temp_rd =  context_param_list ? context_param_list->rd : NULL;
-    RRDDIM *rd;
-    if (temp_rd) {
-        RRDDIM *t = temp_rd;
-        while (t) {
-            dimensions++;
-            t = t->next;
-        }
-    } else
-        dimensions = rrdset_number_of_dimensions(st);
+RRDR *rrdr_create(ONEWAYALLOC *owa, QUERY_TARGET *qt, size_t dimensions, size_t points) {
+    if(unlikely(!qt))
+        return NULL;
 
     // create the rrdr
-    RRDR *r = rrdr_create_for_x_dimensions(owa, dimensions, n);
-    r->st = st;
-    r->st_locked_by_rrdr_create = st_locked_by_rrdr_create;
+    RRDR *r = onewayalloc_callocz(owa, 1, sizeof(RRDR));
+    r->internal.owa = owa;
+    r->internal.qt = qt;
 
-    // set the hidden flag on hidden dimensions
-    int c;
-    for (c = 0, rd = temp_rd ? temp_rd : st->dimensions; rd; c++, rd = rd->next) {
-        if (unlikely(rrddim_option_check(rd, RRDDIM_OPTION_HIDDEN)))
-            r->od[c] = RRDR_DIMENSION_HIDDEN;
-        else
-            r->od[c] = RRDR_DIMENSION_DEFAULT;
+    r->view.before = qt->window.before;
+    r->view.after = qt->window.after;
+    r->time_grouping.points_wanted = points;
+    r->d = (int)dimensions;
+    r->n = (int)points;
+
+    if(points && dimensions) {
+        r->v = onewayalloc_mallocz(owa, points * dimensions * sizeof(NETDATA_DOUBLE));
+        r->o = onewayalloc_mallocz(owa, points * dimensions * sizeof(RRDR_VALUE_FLAGS));
+        r->ar = onewayalloc_mallocz(owa, points * dimensions * sizeof(NETDATA_DOUBLE));
     }
+
+    if(points) {
+        r->t = onewayalloc_callocz(owa, points, sizeof(time_t));
+    }
+
+    if(dimensions) {
+        r->od = onewayalloc_mallocz(owa, dimensions * sizeof(RRDR_DIMENSION_FLAGS));
+        r->di = onewayalloc_callocz(owa, dimensions, sizeof(STRING *));
+        r->dn = onewayalloc_callocz(owa, dimensions, sizeof(STRING *));
+        r->du = onewayalloc_callocz(owa, dimensions, sizeof(STRING *));
+    }
+
+    r->view.group = 1;
+    r->view.update_every = 1;
 
     return r;
 }

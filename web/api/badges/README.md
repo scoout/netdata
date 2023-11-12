@@ -1,6 +1,10 @@
 <!--
 title: "Netdata badges"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/badges/README.md
+sidebar_label: "Netdata badges"
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api"
 -->
 
 # Netdata badges
@@ -25,7 +29,7 @@ Similarly, there is [a chart that shows outbound bandwidth per class](http://lon
 
 The right one is a **volume** calculation. Netdata calculated the total of the last 86.400 seconds (a day) which gives `kilobits`, then divided it by 8 to make it KB, then by 1024 to make it MB and then by 1024 to make it GB. Calculations like this are quite accurate, since for every value collected, every second, Netdata interpolates it to second boundary using microsecond calculations.
 
-Let's see a few more badge examples (they come from the [Netdata registry](/registry/README.md)):
+Let's see a few more badge examples (they come from the [Netdata registry](https://github.com/netdata/netdata/blob/master/registry/README.md)):
 
 -   **cpu usage of user `root`** (you can pick any user; 100% = 1 core). This will be `green <10%`, `yellow <20%`, `orange <50%`, `blue <100%` (1 core), `red` otherwise (you define thresholds and colors on the URL).
 
@@ -73,11 +77,11 @@ Here is what you can put for `options` (these are standard Netdata API options):
 
 -   `alarm=NAME`
 
-    Render the current value and status of an alarm linked to the chart. This option can be ignored if the badge to be generated is not related to an alarm.
+    Render the current value and status of an alert linked to the chart. This option can be ignored if the badge to be generated is not related to an alert.
 
-    The current value of the alarm will be rendered. The color of the badge will indicate the status of the alarm.
+    The current value of the alert will be rendered. The color of the badge will indicate the status of the alert.
 
-    For alarm badges, **both `chart` and `alarm` parameters are required**.
+    For alert badges, **both `chart` and `alarm` parameters are required**.
 
 -   `dimensions=DIMENSION1|DIMENSION2|...`
 
@@ -153,7 +157,7 @@ Here is what you can put for `options` (these are standard Netdata API options):
 
     These fine tune various options of the API. Here is what you can use for badges (the API has more option, but only these are useful for badges):
 
-    -   `percentage`, instead of returning the value, calculate the percentage of the sum of the selected dimensions, versus the sum of all the dimensions of the chart. This also sets the units to `%`.
+    -   `percentage`, instead of returning a value, calculate the percentage of the sum of the values of the selected dimensions (selected sum / total sum * 100). This also sets the units to `%`.
 
     -   `absolute` or `abs`, turn all values positive and then sum them.
 

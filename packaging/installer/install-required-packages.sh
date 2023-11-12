@@ -20,7 +20,6 @@ fi
 PACKAGES_NETDATA=${PACKAGES_NETDATA-1}
 PACKAGES_NETDATA_PYTHON=${PACKAGES_NETDATA_PYTHON-0}
 PACKAGES_NETDATA_PYTHON3=${PACKAGES_NETDATA_PYTHON3-1}
-PACKAGES_NETDATA_PYTHON_MONGO=${PACKAGES_NETDATA_PYTHON_MONGO-0}
 PACKAGES_DEBUG=${PACKAGES_DEBUG-0}
 PACKAGES_IPRANGE=${PACKAGES_IPRANGE-0}
 PACKAGES_FIREHOL=${PACKAGES_FIREHOL-0}
@@ -29,6 +28,7 @@ PACKAGES_UPDATE_IPSETS=${PACKAGES_UPDATE_IPSETS-0}
 PACKAGES_NETDATA_DEMO_SITE=${PACKAGES_NETDATA_DEMO_SITE-0}
 PACKAGES_NETDATA_SENSORS=${PACKAGES_NETDATA_SENSORS-0}
 PACKAGES_NETDATA_DATABASE=${PACKAGES_NETDATA_DATABASE-1}
+PACKAGES_NETDATA_STREAMING_COMPRESSION=${PACKAGES_NETDATA_STREAMING_COMPRESSION-0}
 PACKAGES_NETDATA_EBPF=${PACKAGES_NETDATA_EBPF-1}
 
 # needed commands
@@ -104,8 +104,6 @@ Supported packages (you can append many of them):
     - python         install python
 
     - python3        install python3
-
-    - python-pymongo install python-pymongo (or python3-pymongo for python3)
 
     - sensors        install lm_sensors for monitoring h/w sensors
 
@@ -183,10 +181,15 @@ get_os_release() {
   eval "$(grep -E "^(NAME|ID|ID_LIKE|VERSION|VERSION_ID)=" "${os_release_file}")"
   for x in "${ID}" ${ID_LIKE}; do
     case "${x,,}" in
-      almalinux | alpine | arch | centos | clear-linux-os | debian | fedora | gentoo | manjaro | opensuse-leap | ol | rhel | rocky | sabayon | sles | suse | ubuntu)
+      almalinux | alpine | arch | centos | clear-linux-os | debian | fedora | gentoo | manjaro | opensuse-leap | opensuse-tumbleweed | ol | rhel | rocky | sabayon | sles | suse | ubuntu)
         distribution="${x}"
-        version="${VERSION_ID}"
-        codename="${VERSION}"
+        if [[ "${ID}" = "opensuse-tumbleweed" ]]; then
+          version="tumbleweed"
+          codename="tumbleweed"
+        else
+          version="${VERSION_ID}"
+          codename="${VERSION}"
+        fi
         detection="${os_release_file}"
         break
         ;;
@@ -195,9 +198,10 @@ get_os_release() {
         ;;
     esac
   done
-  [ -z "${distribution}" ] && echo >&2 "Cannot find valid distribution in: ${ID} ${ID_LIKE}" && return 1
+  [[ -z "${distribution}" ]] && echo >&2 "Cannot find valid distribution in: \
+${ID} ${ID_LIKE}" && return 1
 
-  [ -z "${distribution}" ] && return 1
+  [[ -z "${distribution}" ]] && return 1
   return 0
 }
 
@@ -407,9 +411,9 @@ detect_package_manager_from_distribution() {
     centos* | clearos* | rocky* | almalinux*)
       package_installer=""
       tree="centos"
-      [ -n "${yum}" ] && package_installer="install_yum"
-      [ -n "${dnf}" ] && package_installer="install_dnf"
-      if [ "${IGNORE_INSTALLED}" -eq 0 ] && [ -z "${package_installer}" ]; then
+      [[ -n "${yum}" ]] && package_installer="install_yum"
+      [[ -n "${dnf}" ]] && package_installer="install_dnf"
+      if [[ "${IGNORE_INSTALLED}" -eq 0 ]] && [[ -z "${package_installer}" ]]; then
         echo >&2 "command 'yum' or 'dnf' is required to install packages on a '${distribution} ${version}' system."
         exit 1
       fi
@@ -418,9 +422,9 @@ detect_package_manager_from_distribution() {
     fedora* | redhat* | red\ hat* | rhel*)
       package_installer=
       tree="rhel"
-      [ -n "${yum}" ] && package_installer="install_yum"
-      [ -n "${dnf}" ] && package_installer="install_dnf"
-      if [ "${IGNORE_INSTALLED}" -eq 0 ] && [ -z "${package_installer}" ]; then
+      [[ -n "${yum}" ]] && package_installer="install_yum"
+      [[ -n "${dnf}" ]] && package_installer="install_dnf"
+      if [[ "${IGNORE_INSTALLED}" -eq 0 ]] && [[ -z "${package_installer}" ]]; then
         echo >&2 "command 'yum' or 'dnf' is required to install packages on a '${distribution} ${version}' system."
         exit 1
       fi
@@ -610,6 +614,8 @@ declare -A pkg_find=(
   ['gentoo']="sys-apps/findutils"
   ['fedora']="findutils"
   ['clearlinux']="findutils"
+  ['rhel']="findutils"
+  ['centos']="findutils"
   ['macos']="NOTREQUIRED"
   ['freebsd']="NOTREQUIRED"
   ['default']="WARNING|"
@@ -679,6 +685,20 @@ declare -A pkg_json_c_dev=(
   ['default']="json-c-devel"
 )
 
+#TODO:: clearlinux ?
+declare -A pkg_libyaml_dev=(
+  ['alpine']="yaml-dev"
+  ['arch']="libyaml"
+  ['clearlinux']="yaml-dev"
+  ['debian']="libyaml-dev"
+  ['gentoo']="dev-libs/libyaml"
+  ['sabayon']="dev-libs/libyaml"
+  ['suse']="libyaml-devel"
+  ['freebsd']="libyaml"
+  ['macos']="libyaml"
+  ['default']="libyaml-devel"
+)
+
 declare -A pkg_libatomic=(
   ['arch']="NOTREQUIRED"
   ['clearlinux']="NOTREQUIRED"
@@ -690,6 +710,19 @@ declare -A pkg_libatomic=(
   ['suse']="libatomic1"
   ['ubuntu']="libatomic1"
   ['default']="libatomic"
+)
+
+declare -A pkg_libsystemd_dev=(
+  ['alpine']="NOTREQUIRED"
+  ['arch']="NOTREQUIRED" # inherently present on systems actually using systemd
+  ['clearlinux']="system-os-dev"
+  ['debian']="libsystemd-dev"
+  ['freebsd']="NOTREQUIRED"
+  ['gentoo']="NOTREQUIRED" # inherently present on systems actually using systemd
+  ['macos']="NOTREQUIRED"
+  ['sabayon']="NOTREQUIRED" # inherently present on systems actually using systemd
+  ['ubuntu']="libsystemd-dev"
+  ['default']="systemd-devel"
 )
 
 declare -A pkg_bridge_utils=(
@@ -715,6 +748,7 @@ declare -A pkg_tar=(
   ['gentoo']="app-arch/tar"
   ['clearlinux']="os-core-update"
   ['macos']="NOTREQUIRED"
+  ['freebsd']="NOTREQUIRED"
   ['default']="tar"
 )
 
@@ -878,26 +912,6 @@ declare -A pkg_make=(
   ['default']="make"
 )
 
-declare -A pkg_netcat=(
-  ['alpine']="netcat-openbsd"
-  ['arch']="netcat"
-  ['centos']="nmap-ncat"
-  ['debian']="netcat"
-  ['gentoo']="net-analyzer/netcat"
-  ['sabayon']="net-analyzer/gnu-netcat"
-  ['rhel']="nmap-ncat"
-  ['ol']="nmap-ncat"
-  ['suse']="netcat-openbsd"
-  ['clearlinux']="sysadmin-basic"
-  ['arch']="gnu-netcat"
-  ['macos']="NOTREQUIRED"
-  ['default']="netcat"
-
-  # exceptions
-  ['centos-6']="nc"
-  ['rhel-6']="nc"
-)
-
 declare -A pkg_nginx=(
   ['gentoo']="www-servers/nginx"
   ['default']="nginx"
@@ -954,41 +968,6 @@ declare -A pkg_python3_pip=(
   ['default']="python3-pip"
 )
 
-declare -A pkg_python_pymongo=(
-  ['alpine']="WARNING|"
-  ['arch']="python2-pymongo"
-  ['centos']="WARNING|"
-  ['debian']="python-pymongo"
-  ['gentoo']="dev-python/pymongo"
-  ['suse']="python-pymongo"
-  ['clearlinux']="WARNING|"
-  ['rhel']="WARNING|"
-  ['ol']="WARNING|"
-  ['macos']="WARNING|"
-  ['default']="python-pymongo"
-)
-
-declare -A pkg_python3_pymongo=(
-  ['alpine']="WARNING|"
-  ['arch']="python-pymongo"
-  ['centos']="WARNING|"
-  ['debian']="python3-pymongo"
-  ['gentoo']="dev-python/pymongo"
-  ['suse']="python3-pymongo"
-  ['clearlinux']="WARNING|"
-  ['rhel']="WARNING|"
-  ['ol']="WARNING|"
-  ['freebsd']="py37-pymongo"
-  ['macos']="WARNING|"
-  ['default']="python3-pymongo"
-
-  ['centos-7']="python36-pymongo"
-  ['centos-8']="python3-pymongo"
-  ['rhel-7']="python36-pymongo"
-  ['rhel-8']="python3-pymongo"
-  ['ol-8']="python3-pymongo"
-)
-
 declare -A pkg_python_requests=(
   ['alpine']="py-requests"
   ['arch']="python2-requests"
@@ -1036,6 +1015,18 @@ declare -A pkg_lz4=(
   ['macos']="lz4"
   ['freebsd']="liblz4"
   ['default']="lz4-devel"
+)
+
+declare -A pkg_zstd=(
+  ['alpine']="zstd-dev"
+  ['debian']="libzstd-dev"
+  ['ubuntu']="libzstd-dev"
+  ['gentoo']="app-arch/zstd"
+  ['clearlinux']="zstd-devel"
+  ['arch']="zstd"
+  ['macos']="zstd"
+  ['freebsd']="zstd"
+  ['default']="libzstd-devel"
 )
 
 declare -A pkg_libuv=(
@@ -1253,7 +1244,6 @@ packages() {
     require_cmd tar || suitable_package tar
     require_cmd curl || suitable_package curl
     require_cmd gzip || suitable_package gzip
-    require_cmd nc || suitable_package netcat
   fi
 
   # -------------------------------------------------------------------------
@@ -1285,6 +1275,8 @@ packages() {
     suitable_package libuuid-dev
     suitable_package libmnl-dev
     suitable_package json-c-dev
+    suitable_package libyaml-dev
+    suitable_package libsystemd-dev
   fi
 
   # -------------------------------------------------------------------------
@@ -1302,6 +1294,10 @@ packages() {
     suitable_package openssl
   fi
 
+  if [ "${PACKAGES_NETDATA_STREAMING_COMPRESSION}" -ne 0 ]; then
+    suitable_package zstd
+  fi
+
   # -------------------------------------------------------------------------
   # ebpf plugin
   if [ "${PACKAGES_NETDATA_EBPF}" -ne 0 ]; then
@@ -1314,7 +1310,6 @@ packages() {
   if [ "${PACKAGES_NETDATA_PYTHON}" -ne 0 ]; then
     require_cmd python || suitable_package python
 
-    [ "${PACKAGES_NETDATA_PYTHON_MONGO}" -ne 0 ] && suitable_package python-pymongo
     # suitable_package python-requests
     # suitable_package python-pip
   fi
@@ -1325,7 +1320,6 @@ packages() {
   if [ "${PACKAGES_NETDATA_PYTHON3}" -ne 0 ]; then
     require_cmd python3 || suitable_package python3
 
-    [ "${PACKAGES_NETDATA_PYTHON_MONGO}" -ne 0 ] && suitable_package python3-pymongo
     # suitable_package python3-requests
     # suitable_package python3-pip
   fi
@@ -1436,6 +1430,7 @@ validate_tree_freebsd() {
   echo >&2 " > Checking for gmake ..."
   if ! pkg query %n-%v | grep -q gmake; then
     if prompt "gmake is required to build on FreeBSD and is not installed. Shall I install it?"; then
+      # shellcheck disable=2086
       run ${sudo} pkg install ${opts} gmake
     fi
   fi
@@ -1485,13 +1480,16 @@ validate_tree_centos() {
     echo >&2 " > Checking for config-manager ..."
     if ! run ${sudo} dnf config-manager --help; then
       if prompt "config-manager not found, shall I install it?"; then
+        # shellcheck disable=2086
         run ${sudo} dnf ${opts} install 'dnf-command(config-manager)'
       fi
     fi
 
     echo >&2 " > Checking for CRB ..."
+    # shellcheck disable=2086
     if ! run dnf ${sudo} repolist | grep CRB; then
       if prompt "CRB not found, shall I install it?"; then
+        # shellcheck disable=2086
         run ${sudo} dnf ${opts} config-manager --set-enabled crb
       fi
     fi
@@ -1499,24 +1497,29 @@ validate_tree_centos() {
     echo >&2 " > Checking for config-manager ..."
     if ! run ${sudo} yum config-manager --help; then
       if prompt "config-manager not found, shall I install it?"; then
+        # shellcheck disable=2086
         run ${sudo} yum ${opts} install 'dnf-command(config-manager)'
       fi
     fi
 
     echo >&2 " > Checking for PowerTools ..."
+    # shellcheck disable=2086
     if ! run yum ${sudo} repolist | grep PowerTools; then
       if prompt "PowerTools not found, shall I install it?"; then
+        # shellcheck disable=2086
         run ${sudo} yum ${opts} config-manager --set-enabled powertools
       fi
     fi
 
     echo >&2 " > Updating libarchive ..."
+    # shellcheck disable=2086
     run ${sudo} yum ${opts} install libarchive
 
   elif [[ "${version}" =~ ^7(\..*)?$ ]]; then
     echo >&2 " > Checking for EPEL ..."
     if ! rpm -qa | grep epel-release > /dev/null; then
       if prompt "EPEL not found, shall I install it?"; then
+        # shellcheck disable=2086
         run ${sudo} yum ${opts} install epel-release
       fi
     fi
@@ -1525,6 +1528,7 @@ validate_tree_centos() {
     echo >&2 " > Checking for Okay ..."
     if ! rpm -qa | grep okay > /dev/null; then
       if prompt "okay not found, shall I install it?"; then
+        # shellcheck disable=2086
         run ${sudo} yum ${opts} install http://repo.okay.com.mx/centos/6/x86_64/release/okay-release-1-3.el6.noarch.rpm
       fi
     fi
@@ -1687,7 +1691,7 @@ install_equo() {
 PACMAN_DB_SYNCED=0
 validate_install_pacman() {
 
-  if [ ${PACMAN_DB_SYNCED} -eq 0 ]; then
+  if [ "${PACMAN_DB_SYNCED}" -eq 0 ]; then
     echo >&2 " > Running pacman -Sy to sync the database"
     local x
     x=$(pacman -Sy)
@@ -1758,6 +1762,7 @@ install_zypper() {
   fi
 
   local opts="--ignore-unknown"
+  local install_opts="--allow-downgrade"
   if [ "${NON_INTERACTIVE}" -eq 1 ]; then
     echo >&2 "Running in non-interactive mode"
     # http://unix.stackexchange.com/questions/82016/how-to-use-zypper-in-bash-scripts-for-someone-coming-from-apt-get
@@ -1765,9 +1770,8 @@ install_zypper() {
   fi
 
   read -r -a zypper_opts <<< "$opts"
-
   # install the required packages
-  run ${sudo} zypper "${zypper_opts[@]}" install "${@}"
+  run ${sudo} zypper "${zypper_opts[@]}" install "${install_opts}" "${@}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1867,7 +1871,7 @@ EOF
 remote_log() {
   # log success or failure on our system
   # to help us solve installation issues
-  curl > /dev/null 2>&1 -Ss --max-time 3 "https://registry.my-netdata.io/log/installer?status=${1}&error=${2}&distribution=${distribution}&version=${version}&installer=${package_installer}&tree=${tree}&detection=${detection}&netdata=${PACKAGES_NETDATA}&python=${PACKAGES_NETDATA_PYTHON}&python3=${PACKAGES_NETDATA_PYTHON3}&pymongo=${PACKAGES_NETDATA_PYTHON_MONGO}&sensors=${PACKAGES_NETDATA_SENSORS}&database=${PACKAGES_NETDATA_DATABASE}&ebpf=${PACKAGES_NETDATA_EBPF}&firehol=${PACKAGES_FIREHOL}&fireqos=${PACKAGES_FIREQOS}&iprange=${PACKAGES_IPRANGE}&update_ipsets=${PACKAGES_UPDATE_IPSETS}&demo=${PACKAGES_NETDATA_DEMO_SITE}"
+  curl > /dev/null 2>&1 -Ss --max-time 3 "https://registry.my-netdata.io/log/installer?status=${1}&error=${2}&distribution=${distribution}&version=${version}&installer=${package_installer}&tree=${tree}&detection=${detection}&netdata=${PACKAGES_NETDATA}&python=${PACKAGES_NETDATA_PYTHON}&python3=${PACKAGES_NETDATA_PYTHON3}&sensors=${PACKAGES_NETDATA_SENSORS}&database=${PACKAGES_NETDATA_DATABASE}&ebpf=${PACKAGES_NETDATA_EBPF}&firehol=${PACKAGES_FIREHOL}&fireqos=${PACKAGES_FIREQOS}&iprange=${PACKAGES_IPRANGE}&update_ipsets=${PACKAGES_UPDATE_IPSETS}&demo=${PACKAGES_NETDATA_DEMO_SITE}"
 }
 
 if [ -z "${1}" ]; then
@@ -1930,14 +1934,13 @@ while [ -n "${1}" ]; do
       PACKAGES_NETDATA=1
       if [ "${pv}" -eq 2 ]; then
         PACKAGES_NETDATA_PYTHON=1
-        PACKAGES_NETDATA_PYTHON_MONGO=1
       else
         PACKAGES_NETDATA_PYTHON3=1
-        PACKAGES_NETDATA_PYTHON3_MONGO=1
       fi
       PACKAGES_NETDATA_SENSORS=1
       PACKAGES_NETDATA_DATABASE=1
       PACKAGES_NETDATA_EBPF=1
+      PACKAGES_NETDATA_STREAMING_COMPRESSION=1
       ;;
 
     netdata)
@@ -1945,6 +1948,7 @@ while [ -n "${1}" ]; do
       PACKAGES_NETDATA_PYTHON3=1
       PACKAGES_NETDATA_DATABASE=1
       PACKAGES_NETDATA_EBPF=1
+      PACKAGES_NETDATA_STREAMING_COMPRESSION=1
       ;;
 
     python | netdata-python)
@@ -1953,16 +1957,6 @@ while [ -n "${1}" ]; do
 
     python3 | netdata-python3)
       PACKAGES_NETDATA_PYTHON3=1
-      ;;
-
-    python-pymongo)
-      if [ "${pv}" -eq 2 ]; then
-        PACKAGES_NETDATA_PYTHON=1
-        PACKAGES_NETDATA_PYTHON_MONGO=1
-      else
-        PACKAGES_NETDATA_PYTHON3=1
-        PACKAGES_NETDATA_PYTHON3_MONGO=1
-      fi
       ;;
 
     sensors | netdata-sensors)
@@ -1984,10 +1978,8 @@ while [ -n "${1}" ]; do
       PACKAGES_NETDATA=1
       if [ "${pv}" -eq 2 ]; then
         PACKAGES_NETDATA_PYTHON=1
-        PACKAGES_NETDATA_PYTHON_MONGO=1
       else
         PACKAGES_NETDATA_PYTHON3=1
-        PACKAGES_NETDATA_PYTHON3_MONGO=1
       fi
       PACKAGES_DEBUG=1
       PACKAGES_IPRANGE=1

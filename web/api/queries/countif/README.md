@@ -1,6 +1,10 @@
 <!--
 title: "CountIf"
+sidebar_label: "CountIf"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/queries/countif/README.md
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api/Queries"
 -->
 
 # CountIf
@@ -27,7 +31,7 @@ The target number and the desired condition can be set using the `group_options`
 
 ## how to use
 
-This query cannot be used in alarms.
+This query cannot be used in alerts.
 
 `countif` changes the units of charts. The result of the calculation is always from zero to 1, expressing the percentage of database points that matched the condition. 
 

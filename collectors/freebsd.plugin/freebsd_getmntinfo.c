@@ -39,9 +39,9 @@ static size_t mount_points_added = 0, mount_points_found = 0;
 
 static void mount_point_free(struct mount_point *m) {
     if (likely(m->st_space))
-        rrdset_is_obsolete(m->st_space);
+        rrdset_is_obsolete___safe_from_collector_thread(m->st_space);
     if (likely(m->st_inodes))
-        rrdset_is_obsolete(m->st_inodes);
+        rrdset_is_obsolete___safe_from_collector_thread(m->st_inodes);
 
     mount_points_added--;
     freez(m->name);
@@ -54,7 +54,7 @@ static void mount_points_cleanup() {
     struct mount_point *m = mount_points_root, *last = NULL;
     while(m) {
         if (unlikely(!m->updated)) {
-            // info("Removing mount point '%s', linked after '%s'", m->name, last?last->name:"ROOT");
+            // collector_info("Removing mount point '%s', linked after '%s'", m->name, last?last->name:"ROOT");
 
             if (mount_points_last_used == m)
                 mount_points_last_used = last;
@@ -143,18 +143,16 @@ int do_getmntinfo(int update_every, usec_t dt) {
         do_inodes = config_get_boolean_ondemand(CONFIG_SECTION_GETMNTINFO, "inodes usage for all disks", CONFIG_BOOLEAN_AUTO);
 
         excluded_mountpoints = simple_pattern_create(
-                config_get(CONFIG_SECTION_GETMNTINFO, "exclude space metrics on paths",
-                           DEFAULT_EXCLUDED_PATHS)
-                , NULL
-                , SIMPLE_PATTERN_EXACT
-        );
+            config_get(CONFIG_SECTION_GETMNTINFO, "exclude space metrics on paths", DEFAULT_EXCLUDED_PATHS),
+            NULL,
+            SIMPLE_PATTERN_EXACT,
+            true);
 
         excluded_filesystems = simple_pattern_create(
-                config_get(CONFIG_SECTION_GETMNTINFO, "exclude space metrics on filesystems",
-                           DEFAULT_EXCLUDED_FILESYSTEMS)
-                , NULL
-                , SIMPLE_PATTERN_EXACT
-        );
+            config_get(CONFIG_SECTION_GETMNTINFO, "exclude space metrics on filesystems", DEFAULT_EXCLUDED_FILESYSTEMS),
+            NULL,
+            SIMPLE_PATTERN_EXACT,
+            true);
     }
 
     if (likely(do_space || do_inodes)) {
@@ -163,12 +161,12 @@ int do_getmntinfo(int update_every, usec_t dt) {
 
         // there is no mount info in sysctl MIBs
         if (unlikely(!(mntsize = getmntinfo(&mntbuf, MNT_NOWAIT)))) {
-            error("FREEBSD: getmntinfo() failed");
+            collector_error("FREEBSD: getmntinfo() failed");
             do_space = 0;
-            error("DISABLED: disk_space.* charts");
+            collector_error("DISABLED: disk_space.* charts");
             do_inodes = 0;
-            error("DISABLED: disk_inodes.* charts");
-            error("DISABLED: getmntinfo module");
+            collector_error("DISABLED: disk_inodes.* charts");
+            collector_error("DISABLED: getmntinfo module");
             return 1;
         } else {
             int i;
@@ -212,8 +210,6 @@ int do_getmntinfo(int update_every, usec_t dt) {
                 if (unlikely(mntbuf[i].f_flags & MNT_RDONLY && !m->collected))
                     continue;
 
-                // --------------------------------------------------------------------------
-
                 int rendered = 0;
 
                 if (m->do_space == CONFIG_BOOLEAN_YES || (m->do_space == CONFIG_BOOLEAN_AUTO &&
@@ -242,8 +238,7 @@ int do_getmntinfo(int update_every, usec_t dt) {
                                                           mntbuf[i].f_bsize, GIGA_FACTOR, RRD_ALGORITHM_ABSOLUTE);
                         m->rd_space_reserved = rrddim_add(m->st_space, "reserved_for_root", "reserved for root",
                                                           mntbuf[i].f_bsize, GIGA_FACTOR, RRD_ALGORITHM_ABSOLUTE);
-                    } else
-                        rrdset_next(m->st_space);
+                    }
 
                     rrddim_set_by_pointer(m->st_space, m->rd_space_avail,    (collected_number) mntbuf[i].f_bavail);
                     rrddim_set_by_pointer(m->st_space, m->rd_space_used,     (collected_number) (mntbuf[i].f_blocks -
@@ -254,8 +249,6 @@ int do_getmntinfo(int update_every, usec_t dt) {
 
                     rendered++;
                 }
-
-                // --------------------------------------------------------------------------
 
                 if (m->do_inodes == CONFIG_BOOLEAN_YES || (m->do_inodes == CONFIG_BOOLEAN_AUTO &&
                                                            (mntbuf[i].f_files > 1 ||
@@ -279,8 +272,7 @@ int do_getmntinfo(int update_every, usec_t dt) {
 
                         m->rd_inodes_avail = rrddim_add(m->st_inodes, "avail", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
                         m->rd_inodes_used  = rrddim_add(m->st_inodes, "used",  NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-                    } else
-                        rrdset_next(m->st_inodes);
+                    }
 
                     rrddim_set_by_pointer(m->st_inodes, m->rd_inodes_avail, (collected_number) mntbuf[i].f_ffree);
                     rrddim_set_by_pointer(m->st_inodes, m->rd_inodes_used,  (collected_number) (mntbuf[i].f_files -
@@ -295,7 +287,7 @@ int do_getmntinfo(int update_every, usec_t dt) {
             }
         }
     } else {
-        error("DISABLED: getmntinfo module");
+        collector_error("DISABLED: getmntinfo module");
         return 1;
     }
 

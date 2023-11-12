@@ -8,6 +8,11 @@ typedef int32_t REFCOUNT;
 // ----------------------------------------------------------------------------
 // STRING implementation - dedup all STRING
 
+#define STRING_PARTITION_SHIFTS (0)
+#define STRING_PARTITIONS (256 >> STRING_PARTITION_SHIFTS)
+#define string_partition_str(str) ((uint8_t)((str)[0]) >> STRING_PARTITION_SHIFTS)
+#define string_partition(string) (string_partition_str((string)->str))
+
 struct netdata_string {
     uint32_t length;    // the string length including the terminating '\0'
 
@@ -18,22 +23,27 @@ struct netdata_string {
     const char str[];   // the string itself, is appended to this structure
 };
 
-static struct string_hashtable {
-    Pvoid_t JudyHSArray;        // the Judy array - hashtable
-    netdata_rwlock_t rwlock;    // the R/W lock to protect the Judy array
+static struct string_partition {
+    RW_SPINLOCK spinlock;       // the R/W spinlock to protect the Judy array
 
-    long int entries;           // the number of entries in the index
-    long int active_references; // the number of active references alive
-    long int memory;            // the memory used, without the JudyHS index
+    Pvoid_t JudyHSArray;        // the Judy array - hashtable
 
     size_t inserts;             // the number of successful inserts to the index
     size_t deletes;             // the number of successful deleted from the index
-    size_t searches;            // the number of successful searches in the index
-    size_t duplications;        // when a string is referenced
-    size_t releases;            // when a string is unreferenced
+
+    long int entries;           // the number of entries in the index
+    long int memory;            // the memory used, without the JudyHS index
 
 #ifdef NETDATA_INTERNAL_CHECKS
     // internal statistics
+
+    struct {
+        size_t searches;            // the number of successful searches in the index
+        size_t releases;            // when a string is unreferenced
+        size_t duplications;        // when a string is referenced
+        long int active_references; // the number of active references alive
+    } atomic;
+
     size_t found_deleted_on_search;
     size_t found_available_on_search;
     size_t found_deleted_on_insert;
@@ -41,58 +51,75 @@ static struct string_hashtable {
     size_t spins;
 #endif
 
-} string_base = {
-    .JudyHSArray = NULL,
-    .rwlock = NETDATA_RWLOCK_INITIALIZER,
-};
+} string_base[STRING_PARTITIONS] = { 0 };
 
 #ifdef NETDATA_INTERNAL_CHECKS
-#define string_internal_stats_add(var, val) __atomic_add_fetch(&string_base.var, val, __ATOMIC_RELAXED)
+#define string_stats_atomic_increment(partition, var) __atomic_add_fetch(&string_base[partition].atomic.var, 1, __ATOMIC_RELAXED)
+#define string_stats_atomic_decrement(partition, var) __atomic_sub_fetch(&string_base[partition].atomic.var, 1, __ATOMIC_RELAXED)
+#define string_internal_stats_add(partition, var, val) __atomic_add_fetch(&string_base[partition].var, val, __ATOMIC_RELAXED)
 #else
-#define string_internal_stats_add(var, val) do {;} while(0)
+#define string_stats_atomic_increment(partition, var) do {;} while(0)
+#define string_stats_atomic_decrement(partition, var) do {;} while(0)
+#define string_internal_stats_add(partition, var, val) do {;} while(0)
 #endif
 
-#define string_stats_atomic_increment(var) __atomic_add_fetch(&string_base.var, 1, __ATOMIC_RELAXED)
-#define string_stats_atomic_decrement(var) __atomic_sub_fetch(&string_base.var, 1, __ATOMIC_RELAXED)
-
 void string_statistics(size_t *inserts, size_t *deletes, size_t *searches, size_t *entries, size_t *references, size_t *memory, size_t *duplications, size_t *releases) {
-    *inserts = string_base.inserts;
-    *deletes = string_base.deletes;
-    *searches = string_base.searches;
-    *entries = (size_t)string_base.entries;
-    *references = (size_t)string_base.active_references;
-    *memory = (size_t)string_base.memory;
-    *duplications = string_base.duplications;
-    *releases = string_base.releases;
+    if (inserts) *inserts = 0;
+    if (deletes) *deletes = 0;
+    if (searches) *searches = 0;
+    if (entries) *entries = 0;
+    if (references) *references = 0;
+    if (memory) *memory = 0;
+    if (duplications) *duplications = 0;
+    if (releases) *releases = 0;
+
+    for(size_t i = 0; i < STRING_PARTITIONS ;i++) {
+        if (inserts)        *inserts        += string_base[i].inserts;
+        if (deletes)        *deletes        += string_base[i].deletes;
+        if (entries)        *entries        += (size_t) string_base[i].entries;
+        if (memory)         *memory         += (size_t) string_base[i].memory;
+
+#ifdef NETDATA_INTERNAL_CHECKS
+        if (searches)       *searches       += string_base[i].atomic.searches;
+        if (references)     *references     += (size_t) string_base[i].atomic.active_references;
+        if (duplications)   *duplications   += string_base[i].atomic.duplications;
+        if (releases)       *releases       += string_base[i].atomic.releases;
+#endif
+    }
 }
 
 #define string_entry_acquire(se) __atomic_add_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
 #define string_entry_release(se) __atomic_sub_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
 
 static inline bool string_entry_check_and_acquire(STRING *se) {
+#ifdef NETDATA_INTERNAL_CHECKS
+    uint8_t partition = string_partition(se);
+#endif
+
     REFCOUNT expected, desired, count = 0;
+
+    expected = __atomic_load_n(&se->refcount, __ATOMIC_SEQ_CST);
+
     do {
         count++;
-
-        expected = __atomic_load_n(&se->refcount, __ATOMIC_SEQ_CST);
 
         if(expected <= 0) {
             // We cannot use this.
             // The reference counter reached value zero,
             // so another thread is deleting this.
-            string_internal_stats_add(spins, count - 1);
+            string_internal_stats_add(partition, spins, count - 1);
             return false;
         }
 
         desired = expected + 1;
-    }
-    while(!__atomic_compare_exchange_n(&se->refcount, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
 
-    string_internal_stats_add(spins, count - 1);
+    } while(!__atomic_compare_exchange_n(&se->refcount, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+
+    string_internal_stats_add(partition, spins, count - 1);
 
     // statistics
     // string_base.active_references is altered at the in string_strdupz() and string_freez()
-    string_stats_atomic_increment(duplications);
+    string_stats_atomic_increment(partition, duplications);
 
     return true;
 }
@@ -107,9 +134,13 @@ STRING *string_dup(STRING *string) {
 
     string_entry_acquire(string);
 
+#ifdef NETDATA_INTERNAL_CHECKS
+    uint8_t partition = string_partition(string);
+#endif
+
     // statistics
-    string_stats_atomic_increment(active_references);
-    string_stats_atomic_increment(duplications);
+    string_stats_atomic_increment(partition, active_references);
+    string_stats_atomic_increment(partition, duplications);
 
     return string;
 }
@@ -118,26 +149,28 @@ STRING *string_dup(STRING *string) {
 static inline STRING *string_index_search(const char *str, size_t length) {
     STRING *string;
 
+    uint8_t partition = string_partition_str(str);
+
     // Find the string in the index
     // With a read-lock so that multiple readers can use the index concurrently.
 
-    netdata_rwlock_rdlock(&string_base.rwlock);
+    rw_spinlock_read_lock(&string_base[partition].spinlock);
 
     Pvoid_t *Rc;
-    Rc = JudyHSGet(string_base.JudyHSArray, (void *)str, length);
+    Rc = JudyHSGet(string_base[partition].JudyHSArray, (void *)str, length - 1);
     if(likely(Rc)) {
         // found in the hash table
         string = *Rc;
 
         if(string_entry_check_and_acquire(string)) {
             // we can use this entry
-            string_internal_stats_add(found_available_on_search, 1);
+            string_internal_stats_add(partition, found_available_on_search, 1);
         }
         else {
             // this entry is about to be deleted by another thread
             // do not touch it, let it go...
             string = NULL;
-            string_internal_stats_add(found_deleted_on_search, 1);
+            string_internal_stats_add(partition, found_deleted_on_search, 1);
         }
     }
     else {
@@ -145,8 +178,8 @@ static inline STRING *string_index_search(const char *str, size_t length) {
         string = NULL;
     }
 
-    string_stats_atomic_increment(searches);
-    netdata_rwlock_unlock(&string_base.rwlock);
+    string_stats_atomic_increment(partition, searches);
+    rw_spinlock_read_unlock(&string_base[partition].spinlock);
 
     return string;
 }
@@ -159,12 +192,14 @@ static inline STRING *string_index_search(const char *str, size_t length) {
 static inline STRING *string_index_insert(const char *str, size_t length) {
     STRING *string;
 
-    netdata_rwlock_wrlock(&string_base.rwlock);
+    uint8_t partition = string_partition_str(str);
+
+    rw_spinlock_write_lock(&string_base[partition].spinlock);
 
     STRING **ptr;
     {
         JError_t J_Error;
-        Pvoid_t *Rc = JudyHSIns(&string_base.JudyHSArray, (void *)str, length, &J_Error);
+        Pvoid_t *Rc = JudyHSIns(&string_base[partition].JudyHSArray, (void *)str, length - 1, &J_Error);
         if (unlikely(Rc == PJERR)) {
             fatal(
                 "STRING: Cannot insert entry with name '%s' to JudyHS, JU_ERRNO_* == %u, ID == %d",
@@ -183,9 +218,9 @@ static inline STRING *string_index_insert(const char *str, size_t length) {
         string->length = length;
         string->refcount = 1;
         *ptr = string;
-        string_base.inserts++;
-        string_base.entries++;
-        string_base.memory += (long)mem_size;
+        string_base[partition].inserts++;
+        string_base[partition].entries++;
+        string_base[partition].memory += (long)(mem_size + JUDYHS_INDEX_SIZE_ESTIMATE(length));
     }
     else {
         // the item is already in the index
@@ -193,25 +228,27 @@ static inline STRING *string_index_insert(const char *str, size_t length) {
 
         if(string_entry_check_and_acquire(string)) {
             // we can use this entry
-            string_internal_stats_add(found_available_on_insert, 1);
+            string_internal_stats_add(partition, found_available_on_insert, 1);
         }
         else {
             // this entry is about to be deleted by another thread
             // do not touch it, let it go...
             string = NULL;
-            string_internal_stats_add(found_deleted_on_insert, 1);
+            string_internal_stats_add(partition, found_deleted_on_insert, 1);
         }
 
-        string_stats_atomic_increment(searches);
+        string_stats_atomic_increment(partition, searches);
     }
 
-    netdata_rwlock_unlock(&string_base.rwlock);
+    rw_spinlock_write_unlock(&string_base[partition].spinlock);
     return string;
 }
 
 // delete an entry from the index
 static inline void string_index_delete(STRING *string) {
-    netdata_rwlock_wrlock(&string_base.rwlock);
+    uint8_t partition = string_partition(string);
+
+    rw_spinlock_write_lock(&string_base[partition].spinlock);
 
 #ifdef NETDATA_INTERNAL_CHECKS
     if(unlikely(__atomic_load_n(&string->refcount, __ATOMIC_SEQ_CST) != 0))
@@ -220,11 +257,11 @@ static inline void string_index_delete(STRING *string) {
 
     bool deleted = false;
 
-    if (likely(string_base.JudyHSArray)) {
+    if (likely(string_base[partition].JudyHSArray)) {
         JError_t J_Error;
-        int ret = JudyHSDel(&string_base.JudyHSArray, (void *)string->str, string->length, &J_Error);
+        int ret = JudyHSDel(&string_base[partition].JudyHSArray, (void *)string->str, string->length - 1, &J_Error);
         if (unlikely(ret == JERR)) {
-            error(
+            netdata_log_error(
                 "STRING: Cannot delete entry with name '%s' from JudyHS, JU_ERRNO_* == %u, ID == %d",
                 string->str,
                 JU_ERRNO(&J_Error),
@@ -234,20 +271,24 @@ static inline void string_index_delete(STRING *string) {
     }
 
     if (unlikely(!deleted))
-        error("STRING: tried to delete '%s' that is not in the index. Ignoring it.", string->str);
+        netdata_log_error("STRING: tried to delete '%s' that is not in the index. Ignoring it.", string->str);
     else {
         size_t mem_size = sizeof(STRING) + string->length;
-        string_base.deletes++;
-        string_base.entries--;
-        string_base.memory -= (long)mem_size;
+        string_base[partition].deletes++;
+        string_base[partition].entries--;
+        string_base[partition].memory -= (long)(mem_size + JUDYHS_INDEX_SIZE_ESTIMATE(string->length));
         freez(string);
     }
 
-    netdata_rwlock_unlock(&string_base.rwlock);
+    rw_spinlock_write_unlock(&string_base[partition].spinlock);
 }
 
 STRING *string_strdupz(const char *str) {
     if(unlikely(!str || !*str)) return NULL;
+
+#ifdef NETDATA_INTERNAL_CHECKS
+    uint8_t partition = string_partition_str(str);
+#endif
 
     size_t length = strlen(str) + 1;
     STRING *string = string_index_search(str, length);
@@ -261,7 +302,7 @@ STRING *string_strdupz(const char *str) {
     }
 
     // statistics
-    string_stats_atomic_increment(active_references);
+    string_stats_atomic_increment(partition, active_references);
 
     return string;
 }
@@ -269,6 +310,9 @@ STRING *string_strdupz(const char *str) {
 void string_freez(STRING *string) {
     if(unlikely(!string)) return;
 
+#ifdef NETDATA_INTERNAL_CHECKS
+    uint8_t partition = string_partition(string);
+#endif
     REFCOUNT refcount = string_entry_release(string);
 
 #ifdef NETDATA_INTERNAL_CHECKS
@@ -280,16 +324,16 @@ void string_freez(STRING *string) {
         string_index_delete(string);
 
     // statistics
-    string_stats_atomic_decrement(active_references);
-    string_stats_atomic_increment(releases);
+    string_stats_atomic_decrement(partition, active_references);
+    string_stats_atomic_increment(partition, releases);
 }
 
-size_t string_strlen(STRING *string) {
+inline size_t string_strlen(STRING *string) {
     if(unlikely(!string)) return 0;
     return string->length - 1;
 }
 
-const char *string2str(STRING *string) {
+inline const char *string2str(STRING *string) {
     if(unlikely(!string)) return "";
     return string->str;
 }
@@ -385,6 +429,54 @@ static void string_unittest_free_char_pp(char **pp, size_t entries) {
     freez(pp);
 }
 
+static long unittest_string_entries(void) {
+    long entries = 0;
+    for(size_t p = 0; p < STRING_PARTITIONS ;p++)
+        entries += string_base[p].entries;
+
+    return entries;
+}
+
+#ifdef NETDATA_INTERNAL_CHECKS
+
+static size_t unittest_string_found_deleted_on_search(void) {
+    size_t entries = 0;
+    for(size_t p = 0; p < STRING_PARTITIONS ;p++)
+        entries += string_base[p].found_deleted_on_search;
+
+    return entries;
+}
+static size_t unittest_string_found_available_on_search(void) {
+    size_t entries = 0;
+    for(size_t p = 0; p < STRING_PARTITIONS ;p++)
+        entries += string_base[p].found_available_on_search;
+
+    return entries;
+}
+static size_t unittest_string_found_deleted_on_insert(void) {
+    size_t entries = 0;
+    for(size_t p = 0; p < STRING_PARTITIONS ;p++)
+        entries += string_base[p].found_deleted_on_insert;
+
+    return entries;
+}
+static size_t unittest_string_found_available_on_insert(void) {
+    size_t entries = 0;
+    for(size_t p = 0; p < STRING_PARTITIONS ;p++)
+        entries += string_base[p].found_available_on_insert;
+
+    return entries;
+}
+static size_t unittest_string_spins(void) {
+    size_t entries = 0;
+    for(size_t p = 0; p < STRING_PARTITIONS ;p++)
+        entries += string_base[p].spins;
+
+    return entries;
+}
+
+#endif // NETDATA_INTERNAL_CHECKS
+
 int string_unittest(size_t entries) {
     size_t errors = 0;
 
@@ -393,7 +485,7 @@ int string_unittest(size_t entries) {
 
     // check string
     {
-        long int string_entries_starting = string_base.entries;
+        long entries_starting = unittest_string_entries();
 
         fprintf(stderr, "\nChecking strings...\n");
 
@@ -437,48 +529,49 @@ int string_unittest(size_t entries) {
             strings[i] = string_strdupz(names[i]);
         }
         end_ut = now_realtime_usec();
-        fprintf(stderr, "Created %zu strings in %llu usecs\n", entries, end_ut - start_ut);
+        fprintf(stderr, "Created %zu strings in %"PRIu64" usecs\n", entries, end_ut - start_ut);
 
         start_ut = now_realtime_usec();
         for(size_t i = 0; i < entries ;i++) {
             strings[i] = string_dup(strings[i]);
         }
         end_ut = now_realtime_usec();
-        fprintf(stderr, "Cloned %zu strings in %llu usecs\n", entries, end_ut - start_ut);
+        fprintf(stderr, "Cloned %zu strings in %"PRIu64" usecs\n", entries, end_ut - start_ut);
 
         start_ut = now_realtime_usec();
         for(size_t i = 0; i < entries ;i++) {
             strings[i] = string_strdupz(string2str(strings[i]));
         }
         end_ut = now_realtime_usec();
-        fprintf(stderr, "Found %zu existing strings in %llu usecs\n", entries, end_ut - start_ut);
+        fprintf(stderr, "Found %zu existing strings in %"PRIu64" usecs\n", entries, end_ut - start_ut);
 
         start_ut = now_realtime_usec();
         for(size_t i = 0; i < entries ;i++) {
             string_freez(strings[i]);
         }
         end_ut = now_realtime_usec();
-        fprintf(stderr, "Released %zu referenced strings in %llu usecs\n", entries, end_ut - start_ut);
+        fprintf(stderr, "Released %zu referenced strings in %"PRIu64" usecs\n", entries, end_ut - start_ut);
 
         start_ut = now_realtime_usec();
         for(size_t i = 0; i < entries ;i++) {
             string_freez(strings[i]);
         }
         end_ut = now_realtime_usec();
-        fprintf(stderr, "Released (again) %zu referenced strings in %llu usecs\n", entries, end_ut - start_ut);
+        fprintf(stderr, "Released (again) %zu referenced strings in %"PRIu64" usecs\n", entries, end_ut - start_ut);
 
         start_ut = now_realtime_usec();
         for(size_t i = 0; i < entries ;i++) {
             string_freez(strings[i]);
         }
         end_ut = now_realtime_usec();
-        fprintf(stderr, "Freed %zu strings in %llu usecs\n", entries, end_ut - start_ut);
+        fprintf(stderr, "Freed %zu strings in %"PRIu64" usecs\n", entries, end_ut - start_ut);
 
         freez(strings);
 
-        if(string_base.entries != string_entries_starting + 2) {
+        if(unittest_string_entries() != entries_starting + 2) {
             errors++;
-            fprintf(stderr, "ERROR: strings dictionary should have %ld items but it has %ld\n", string_entries_starting + 2, string_base.entries);
+            fprintf(stderr, "ERROR: strings dictionary should have %ld items but it has %ld\n",
+                    entries_starting + 2, unittest_string_entries());
         }
         else
             fprintf(stderr, "OK: strings dictionary has 2 items\n");
@@ -531,11 +624,11 @@ int string_unittest(size_t entries) {
         };
 
 #ifdef NETDATA_INTERNAL_CHECKS
-        size_t ofound_deleted_on_search = string_base.found_deleted_on_search,
-               ofound_available_on_search = string_base.found_available_on_search,
-               ofound_deleted_on_insert = string_base.found_deleted_on_insert,
-               ofound_available_on_insert = string_base.found_available_on_insert,
-               ospins = string_base.spins;
+        size_t ofound_deleted_on_search = unittest_string_found_deleted_on_search(),
+               ofound_available_on_search = unittest_string_found_available_on_search(),
+               ofound_deleted_on_insert = unittest_string_found_deleted_on_insert(),
+               ofound_available_on_insert = unittest_string_found_available_on_insert(),
+               ospins = unittest_string_spins();
 #endif
 
         size_t oinserts, odeletes, osearches, oentries, oreferences, omemory, oduplications, oreleases;
@@ -545,9 +638,9 @@ int string_unittest(size_t entries) {
         int threads_to_create = 2;
         fprintf(
             stderr,
-            "Checking string concurrency with %d threads for %ld seconds...\n",
+            "Checking string concurrency with %d threads for %lld seconds...\n",
             threads_to_create,
-            seconds_to_run);
+            (long long)seconds_to_run);
         // check string concurrency
         netdata_thread_t threads[threads_to_create];
         tu.join = 0;
@@ -572,11 +665,11 @@ int string_unittest(size_t entries) {
                 inserts - oinserts, deletes - odeletes, searches - osearches, sentries - oentries, references - oreferences, memory - omemory, duplications - oduplications, releases - oreleases);
 
 #ifdef NETDATA_INTERNAL_CHECKS
-        size_t found_deleted_on_search = string_base.found_deleted_on_search,
-               found_available_on_search = string_base.found_available_on_search,
-               found_deleted_on_insert = string_base.found_deleted_on_insert,
-               found_available_on_insert = string_base.found_available_on_insert,
-               spins = string_base.spins;
+        size_t found_deleted_on_search = unittest_string_found_deleted_on_search(),
+               found_available_on_search = unittest_string_found_available_on_search(),
+               found_deleted_on_insert = unittest_string_found_deleted_on_insert(),
+               found_available_on_insert = unittest_string_found_available_on_insert(),
+               spins = unittest_string_spins();
 
         fprintf(stderr, "on insert: %zu ok + %zu deleted\non search: %zu ok + %zu deleted\nspins: %zu\n",
                 found_available_on_insert - ofound_available_on_insert,

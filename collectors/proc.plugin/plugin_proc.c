@@ -18,6 +18,7 @@ static struct proc_module {
     {.name = "/proc/stat",                   .dim = "stat",         .func = do_proc_stat},
     {.name = "/proc/uptime",                 .dim = "uptime",       .func = do_proc_uptime},
     {.name = "/proc/loadavg",                .dim = "loadavg",      .func = do_proc_loadavg},
+    {.name = "/proc/sys/fs/file-nr",         .dim = "file-nr",      .func = do_proc_sys_fs_file_nr},
     {.name = "/proc/sys/kernel/random/entropy_avail", .dim = "entropy", .func = do_proc_sys_kernel_random_entropy_avail},
 
     // pressure metrics
@@ -32,7 +33,8 @@ static struct proc_module {
     {.name = "/proc/meminfo",                .dim = "meminfo",      .func = do_proc_meminfo},
     {.name = "/sys/kernel/mm/ksm",           .dim = "ksm",          .func = do_sys_kernel_mm_ksm},
     {.name = "/sys/block/zram",              .dim = "zram",         .func = do_sys_block_zram},
-    {.name = "/sys/devices/system/edac/mc",  .dim = "ecc",          .func = do_proc_sys_devices_system_edac_mc},
+    {.name = "/sys/devices/system/edac/mc",  .dim = "edac",         .func = do_proc_sys_devices_system_edac_mc},
+    {.name = "/sys/devices/pci/aer",         .dim = "pci_aer",      .func = do_proc_sys_devices_pci_aer},
     {.name = "/sys/devices/system/node",     .dim = "numa",         .func = do_proc_sys_devices_system_node},
     {.name = "/proc/pagetypeinfo",           .dim = "pagetypeinfo", .func = do_proc_pagetypeinfo},
 
@@ -40,11 +42,7 @@ static struct proc_module {
     {.name = "/proc/net/wireless",           .dim = "netwireless",  .func = do_proc_net_wireless},
     {.name = "/proc/net/sockstat",           .dim = "sockstat",     .func = do_proc_net_sockstat},
     {.name = "/proc/net/sockstat6",          .dim = "sockstat6",    .func = do_proc_net_sockstat6},
-    {.name = "/proc/net/netstat",
-     .dim = "netstat",
-     .func = do_proc_net_netstat}, // this has to be before /proc/net/snmp, because there is a shared metric
-    {.name = "/proc/net/snmp",               .dim = "snmp",         .func = do_proc_net_snmp},
-    {.name = "/proc/net/snmp6",              .dim = "snmp6",        .func = do_proc_net_snmp6},
+    {.name = "/proc/net/netstat",            .dim = "netstat",      .func = do_proc_net_netstat},
     {.name = "/proc/net/sctp/snmp",          .dim = "sctp",         .func = do_proc_net_sctp_snmp},
     {.name = "/proc/net/softnet_stat",       .dim = "softnet",      .func = do_proc_net_softnet_stat},
     {.name = "/proc/net/ip_vs/stats",        .dim = "ipvs",         .func = do_proc_net_ip_vs_stats},
@@ -72,8 +70,11 @@ static struct proc_module {
     // IPC metrics
     {.name = "ipc",                          .dim = "ipc",          .func = do_ipc},
 
-    {.name = "/sys/class/power_supply",      .dim = "power_supply", .func = do_sys_class_power_supply},
     // linux power supply metrics
+    {.name = "/sys/class/power_supply",      .dim = "power_supply", .func = do_sys_class_power_supply},
+    
+    // GPU metrics
+    {.name = "/sys/class/drm",               .dim = "drm",          .func = do_sys_class_drm},
 
     // the terminator of this array
     {.name = NULL, .dim = NULL, .func = NULL}
@@ -90,7 +91,7 @@ static void proc_main_cleanup(void *ptr)
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
-    info("cleaning up...");
+    collector_info("cleaning up...");
 
     if (netdev_thread) {
         netdata_thread_join(*netdev_thread, NULL);
@@ -102,13 +103,50 @@ static void proc_main_cleanup(void *ptr)
     worker_unregister();
 }
 
+bool inside_lxc_container = false;
+
+static bool is_lxcfs_proc_mounted() {
+    procfile *ff = NULL;
+
+    if (unlikely(!ff)) {
+        char filename[FILENAME_MAX + 1];
+        snprintfz(filename, FILENAME_MAX, "/proc/self/mounts");
+        ff = procfile_open(filename, " \t", PROCFILE_FLAG_DEFAULT);
+        if (unlikely(!ff))
+            return false;
+    }
+
+    ff = procfile_readall(ff);
+    if (unlikely(!ff))
+        return false;
+
+    unsigned long l, lines = procfile_lines(ff);
+
+    for (l = 0; l < lines; l++) {
+        size_t words = procfile_linewords(ff, l);
+        if (words < 2) {
+            continue;
+        }
+        if (!strcmp(procfile_lineword(ff, l, 0), "lxcfs") && !strncmp(procfile_lineword(ff, l, 1), "/proc", 5)) {
+            procfile_close(ff);
+            return true;   
+        }            
+    }
+
+    procfile_close(ff);
+
+    return false;
+}
+
 void *proc_main(void *ptr)
 {
     worker_register("PROC");
 
+    rrd_collector_started();
+
     if (config_get_boolean("plugin:proc", "/proc/net/dev", CONFIG_BOOLEAN_YES)) {
         netdev_thread = mallocz(sizeof(netdata_thread_t));
-        debug(D_SYSTEM, "Starting thread %s.", THREAD_NETDEV_NAME);
+        netdata_log_debug(D_SYSTEM, "Starting thread %s.", THREAD_NETDEV_NAME);
         netdata_thread_create(
             netdev_thread, THREAD_NETDEV_NAME, NETDATA_THREAD_OPTION_JOINABLE, netdev_main, netdev_thread);
     }
@@ -132,22 +170,24 @@ void *proc_main(void *ptr)
     heartbeat_t hb;
     heartbeat_init(&hb);
 
-    while (!netdata_exit) {
+    inside_lxc_container = is_lxcfs_proc_mounted();
+
+    while (service_running(SERVICE_COLLECTORS)) {
         worker_is_idle();
         usec_t hb_dt = heartbeat_next(&hb, step);
 
-        if (unlikely(netdata_exit))
+        if (unlikely(!service_running(SERVICE_COLLECTORS)))
             break;
 
         for (i = 0; proc_modules[i].name; i++) {
-            if (unlikely(netdata_exit))
+            if (unlikely(!service_running(SERVICE_COLLECTORS)))
                 break;
 
             struct proc_module *pm = &proc_modules[i];
             if (unlikely(!pm->enabled))
                 continue;
 
-            debug(D_PROCNETDEV_LOOP, "PROC calling %s.", pm->name);
+            netdata_log_debug(D_PROCNETDEV_LOOP, "PROC calling %s.", pm->name);
 
             worker_is_busy(i);
             pm->enabled = !pm->func(localhost->rrd_update_every, hb_dt);

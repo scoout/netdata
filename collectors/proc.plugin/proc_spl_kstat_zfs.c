@@ -140,7 +140,7 @@ int do_proc_spl_kstat_zfs_arcstats(int update_every, usec_t dt) {
     if(likely(!do_zfs_stats)) {
         DIR *dir = opendir(dirname);
         if(unlikely(!dir)) {
-            error("Cannot read directory '%s'", dirname);
+            collector_error("Cannot read directory '%s'", dirname);
             return 1;
         }
 
@@ -177,7 +177,7 @@ int do_proc_spl_kstat_zfs_arcstats(int update_every, usec_t dt) {
     for(l = 0; l < lines ;l++) {
         size_t words = procfile_linewords(ff, l);
         if(unlikely(words < 3)) {
-            if(unlikely(words)) error("Cannot read " ZFS_PROC_ARCSTATS " line %zu. Expected 3 params, read %zu.", l, words);
+            if(unlikely(words)) collector_error("Cannot read " ZFS_PROC_ARCSTATS " line %zu. Expected 3 params, read %zu.", l, words);
             continue;
         }
 
@@ -216,6 +216,7 @@ struct zfs_pool {
     RRDDIM *rd_offline;
     RRDDIM *rd_removed;
     RRDDIM *rd_unavail;
+    RRDDIM *rd_suspended;
 
     int updated;
     int disabled;
@@ -226,6 +227,7 @@ struct zfs_pool {
     int offline;
     int removed;
     int unavail;
+    int suspended;
 };
 
 struct deleted_zfs_pool {
@@ -238,7 +240,7 @@ DICTIONARY *zfs_pools = NULL;
 void disable_zfs_pool_state(struct zfs_pool *pool)
 {
     if (pool->st)
-        rrdset_is_obsolete(pool->st);
+        rrdset_is_obsolete___safe_from_collector_thread(pool->st);
 
     pool->st = NULL;
 
@@ -248,6 +250,7 @@ void disable_zfs_pool_state(struct zfs_pool *pool)
     pool->rd_offline = NULL;
     pool->rd_removed = NULL;
     pool->rd_unavail = NULL;
+    pool->rd_suspended = NULL;
 
     pool->disabled = 1;
 }
@@ -285,8 +288,10 @@ int update_zfs_pool_state_chart(const DICTIONARY_ITEM *item, void *pool_p, void 
                 pool->rd_offline = rrddim_add(pool->st, "offline", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
                 pool->rd_removed = rrddim_add(pool->st, "removed", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
                 pool->rd_unavail = rrddim_add(pool->st, "unavail", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-            } else
-                rrdset_next(pool->st);
+                pool->rd_suspended = rrddim_add(pool->st, "suspended", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+
+                rrdlabels_add(pool->st->rrdlabels, "pool", name, RRDLABEL_SRC_AUTO);
+            }
 
             rrddim_set_by_pointer(pool->st, pool->rd_online, pool->online);
             rrddim_set_by_pointer(pool->st, pool->rd_degraded, pool->degraded);
@@ -294,6 +299,7 @@ int update_zfs_pool_state_chart(const DICTIONARY_ITEM *item, void *pool_p, void 
             rrddim_set_by_pointer(pool->st, pool->rd_offline, pool->offline);
             rrddim_set_by_pointer(pool->st, pool->rd_removed, pool->removed);
             rrddim_set_by_pointer(pool->st, pool->rd_unavail, pool->unavail);
+            rrddim_set_by_pointer(pool->st, pool->rd_suspended, pool->suspended);
             rrdset_done(pool->st);
         }
     } else {
@@ -321,7 +327,7 @@ int do_proc_spl_kstat_zfs_pool_state(int update_every, usec_t dt)
         snprintfz(filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/proc/spl/kstat/zfs");
         dirname = config_get("plugin:proc:" ZFS_PROC_POOLS, "directory to monitor", filename);
 
-        zfs_pools = dictionary_create(DICT_OPTION_SINGLE_THREADED);
+        zfs_pools = dictionary_create_advanced(DICT_OPTION_SINGLE_THREADED, &dictionary_stats_category_collectors, 0);
 
         do_zfs_pool_state = 1;
     }
@@ -329,7 +335,7 @@ int do_proc_spl_kstat_zfs_pool_state(int update_every, usec_t dt)
     if (likely(do_zfs_pool_state)) {
         DIR *dir = opendir(dirname);
         if (unlikely(!dir)) {
-            error("Cannot read directory '%s'", dirname);
+            collector_error("Cannot read directory '%s'", dirname);
             return 1;
         }
 
@@ -363,10 +369,10 @@ int do_proc_spl_kstat_zfs_pool_state(int update_every, usec_t dt)
                 pool->offline = 0;
                 pool->removed = 0;
                 pool->unavail = 0;
+                pool->suspended = 0;
 
                 char filename[FILENAME_MAX + 1];
-                snprintfz(
-                    filename, FILENAME_MAX, "%s%s/%s/state", netdata_configured_host_prefix, dirname, de->d_name);
+                snprintfz(filename, FILENAME_MAX, "%s/%s/state", dirname, de->d_name);
 
                 char state[STATE_SIZE + 1];
                 int ret = read_file(filename, state, STATE_SIZE);
@@ -387,13 +393,15 @@ int do_proc_spl_kstat_zfs_pool_state(int update_every, usec_t dt)
                         pool->removed = 1;
                     } else if (!strcmp(state, "UNAVAIL\n")) {
                         pool->unavail = 1;
+                    } else if (!strcmp(state, "SUSPENDED\n")) {
+                        pool->suspended = 1;
                     } else {
                         disable_zfs_pool_state(pool);
 
                         char *c = strchr(state, '\n');
                         if (c)
                             *c = '\0';
-                        error("ZFS POOLS: Undefined state %s for zpool %s, disabling the chart", state, de->d_name);
+                        collector_error("ZFS POOLS: Undefined state %s for zpool %s, disabling the chart", state, de->d_name);
                     }
                 }
             }
@@ -403,7 +411,7 @@ int do_proc_spl_kstat_zfs_pool_state(int update_every, usec_t dt)
     }
 
     if (do_zfs_pool_state && pool_found && !state_file_found) {
-        info("ZFS POOLS: State files not found. Disabling the module.");
+        collector_info("ZFS POOLS: State files not found. Disabling the module.");
         do_zfs_pool_state = 0;
     }
 

@@ -5,7 +5,7 @@
 
 #include "../libnetdata.h"
 
-extern pid_t gettid(void);
+pid_t gettid(void);
 
 typedef enum {
     NETDATA_THREAD_OPTION_DEFAULT          = 0 << 0,
@@ -20,28 +20,64 @@ typedef enum {
 
 typedef pthread_t netdata_thread_t;
 
+struct netdata_static_thread {
+    // the name of the thread as it should appear in the logs
+    char *name;
+
+    // the section of netdata.conf to check if this is enabled or not
+    char *config_section;
+
+    // the name of the config option to check if it is true or false
+    char *config_name;
+
+    // the current status of the thread
+    volatile sig_atomic_t enabled;
+
+    // internal use, to maintain a pointer to the created thread
+    netdata_thread_t *thread;
+
+    // an initialization function to run before spawning the thread
+    void (*init_routine) (void);
+
+    // the threaded worker
+    void *(*start_routine) (void *);
+
+    // the environment variable to create
+    char *env_name;
+
+    // global variable
+    bool *global_variable;
+};
+
+#define NETDATA_MAIN_THREAD_RUNNING     CONFIG_BOOLEAN_YES
+#define NETDATA_MAIN_THREAD_EXITING     (CONFIG_BOOLEAN_YES + 1)
+#define NETDATA_MAIN_THREAD_EXITED      CONFIG_BOOLEAN_NO
+
 #define NETDATA_THREAD_TAG_MAX 100
-extern const char *netdata_thread_tag(void);
-extern int netdata_thread_tag_exists(void);
+const char *netdata_thread_tag(void);
+int netdata_thread_tag_exists(void);
 
-extern size_t netdata_threads_init(void);
-extern void netdata_threads_init_after_fork(size_t stacksize);
+size_t netdata_threads_init(void);
+void netdata_threads_init_after_fork(size_t stacksize);
+void netdata_threads_init_for_external_plugins(size_t stacksize);
 
-extern int netdata_thread_create(netdata_thread_t *thread, const char *tag, NETDATA_THREAD_OPTIONS options, void *(*start_routine) (void *), void *arg);
+int netdata_thread_create(netdata_thread_t *thread, const char *tag, NETDATA_THREAD_OPTIONS options, void *(*start_routine) (void *), void *arg);
 
 #ifdef NETDATA_INTERNAL_CHECKS
 #define netdata_thread_cancel(thread) netdata_thread_cancel_with_trace(thread, __LINE__, __FILE__, __FUNCTION__)
-extern int netdata_thread_cancel_with_trace(netdata_thread_t thread, int line, const char *file, const char *function);
+int netdata_thread_cancel_with_trace(netdata_thread_t thread, int line, const char *file, const char *function);
 #else
-extern int netdata_thread_cancel(netdata_thread_t thread);
+int netdata_thread_cancel(netdata_thread_t thread);
 #endif
 
-extern int netdata_thread_join(netdata_thread_t thread, void **retval);
-extern int netdata_thread_detach(pthread_t thread);
+int netdata_thread_join(netdata_thread_t thread, void **retval);
+int netdata_thread_detach(pthread_t thread);
 
 #define NETDATA_THREAD_NAME_MAX 15
-extern void uv_thread_set_name_np(uv_thread_t ut, const char* name);
-extern void os_thread_get_current_name_np(char threadname[NETDATA_THREAD_NAME_MAX + 1]);
+void uv_thread_set_name_np(uv_thread_t ut, const char* name);
+void os_thread_get_current_name_np(char threadname[NETDATA_THREAD_NAME_MAX + 1]);
+
+void webrtc_set_thread_name(void);
 
 #define netdata_thread_self pthread_self
 #define netdata_thread_testcancel pthread_testcancel

@@ -43,8 +43,7 @@ extern "C" {
 #define D_ANALYTICS         0x0000000080000000
 #define D_RRDENGINE         0x0000000100000000
 #define D_ACLK              0x0000000200000000
-#define D_METADATALOG       0x0000000400000000
-#define D_ACLK_SYNC         0x0000000800000000
+#define D_REPLICATION       0x0000002000000000
 #define D_SYSTEM            0x8000000000000000
 
 extern int web_server_is_multithreaded;
@@ -56,9 +55,17 @@ extern const char *program_name;
 extern int stdaccess_fd;
 extern FILE *stdaccess;
 
+extern int stdhealth_fd;
+extern FILE *stdhealth;
+
+extern int stdcollector_fd;
+extern FILE *stderror;
+
 extern const char *stdaccess_filename;
 extern const char *stderr_filename;
 extern const char *stdout_filename;
+extern const char *stdhealth_filename;
+extern const char *stdcollector_filename;
 extern const char *facility_log;
 
 #ifdef ENABLE_ACLK
@@ -71,42 +78,81 @@ extern int aclklog_enabled;
 extern int access_log_syslog;
 extern int error_log_syslog;
 extern int output_log_syslog;
+extern int health_log_syslog;
 
 extern time_t error_log_throttle_period;
 extern unsigned long error_log_errors_per_period, error_log_errors_per_period_backup;
-extern int error_log_limit(int reset);
+int error_log_limit(int reset);
 
-extern void open_all_log_files();
-extern void reopen_all_log_files();
+void open_all_log_files();
+void reopen_all_log_files();
+
+#define LOG_DATE_LENGTH 26
+void log_date(char *buffer, size_t len, time_t now);
 
 static inline void debug_dummy(void) {}
 
 void error_log_limit_reset(void);
 void error_log_limit_unlimited(void);
 
+typedef struct error_with_limit {
+    time_t log_every;
+    size_t count;
+    time_t last_logged;
+    usec_t sleep_ut;
+} ERROR_LIMIT;
+
+typedef enum netdata_log_level {
+    NETDATA_LOG_LEVEL_ERROR,
+    NETDATA_LOG_LEVEL_INFO,
+
+    NETDATA_LOG_LEVEL_END
+} netdata_log_level_t;
+
+#define NETDATA_LOG_LEVEL_INFO_STR "info"
+#define NETDATA_LOG_LEVEL_ERROR_STR "error"
+#define NETDATA_LOG_LEVEL_ERROR_SHORT_STR "err"
+
+extern netdata_log_level_t global_log_severity_level;
+netdata_log_level_t log_severity_string_to_severity_level(char *level);
+char *log_severity_level_to_severity_string(netdata_log_level_t level);
+void log_set_global_severity_level(netdata_log_level_t value);
+void log_set_global_severity_for_external_plugins();
+
+#define error_limit_static_global_var(var, log_every_secs, sleep_usecs) static ERROR_LIMIT var = { .last_logged = 0, .count = 0, .log_every = (log_every_secs), .sleep_ut = (sleep_usecs) }
+#define error_limit_static_thread_var(var, log_every_secs, sleep_usecs) static __thread ERROR_LIMIT var = { .last_logged = 0, .count = 0, .log_every = (log_every_secs), .sleep_ut = (sleep_usecs) }
+
 #ifdef NETDATA_INTERNAL_CHECKS
-#define debug(type, args...) do { if(unlikely(debug_flags & type)) debug_int(__FILE__, __FUNCTION__, __LINE__, ##args); } while(0)
-#define internal_error(condition, args...) do { if(unlikely(condition)) error_int("IERR", __FILE__, __FUNCTION__, __LINE__, ##args); } while(0)
+#define netdata_log_debug(type, args...) do { if(unlikely(debug_flags & type)) debug_int(__FILE__, __FUNCTION__, __LINE__, ##args); } while(0)
+#define internal_error(condition, args...) do { if(unlikely(condition)) error_int(0, "IERR", __FILE__, __FUNCTION__, __LINE__, ##args); } while(0)
+#define internal_fatal(condition, args...) do { if(unlikely(condition)) fatal_int(__FILE__, __FUNCTION__, __LINE__, ##args); } while(0)
 #else
-#define debug(type, args...) debug_dummy()
+#define netdata_log_debug(type, args...) debug_dummy()
 #define internal_error(args...) debug_dummy()
+#define internal_fatal(args...) debug_dummy()
 #endif
 
-#define info(args...)    info_int(__FILE__, __FUNCTION__, __LINE__, ##args)
-#define infoerr(args...) error_int("INFO", __FILE__, __FUNCTION__, __LINE__, ##args)
-#define error(args...)   error_int("ERROR", __FILE__, __FUNCTION__, __LINE__, ##args)
+#define netdata_log_info(args...)    info_int(0, __FILE__, __FUNCTION__, __LINE__, ##args)
+#define collector_info(args...)    info_int(1, __FILE__, __FUNCTION__, __LINE__, ##args)
+#define infoerr(args...) error_int(0, "INFO", __FILE__, __FUNCTION__, __LINE__, ##args)
+#define netdata_log_error(args...)   error_int(0, "ERROR", __FILE__, __FUNCTION__, __LINE__, ##args)
+#define collector_infoerr(args...) error_int(1, "INFO", __FILE__, __FUNCTION__, __LINE__, ##args)
+#define collector_error(args...)   error_int(1, "ERROR", __FILE__, __FUNCTION__, __LINE__, ##args)
+#define error_limit(erl, args...)   error_limit_int(erl, "ERROR", __FILE__, __FUNCTION__, __LINE__, ##args)
 #define fatal(args...)   fatal_int(__FILE__, __FUNCTION__, __LINE__, ##args)
 #define fatal_assert(expr) ((expr) ? (void)(0) : fatal_int(__FILE__, __FUNCTION__, __LINE__, "Assertion `%s' failed", #expr))
 
-extern void send_statistics(const char *action, const char *action_result, const char *action_data);
-extern void debug_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(4, 5);
-extern void info_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(4, 5);
-extern void error_int( const char *prefix, const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(5, 6);
-extern void fatal_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) NORETURN PRINTFLIKE(4, 5);
-extern void log_access( const char *fmt, ... ) PRINTFLIKE(1, 2);
+void send_statistics(const char *action, const char *action_result, const char *action_data);
+void debug_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(4, 5);
+void info_int( int is_collector, const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(5, 6);
+void error_int( int is_collector, const char *prefix, const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(6, 7);
+void error_limit_int(ERROR_LIMIT *erl, const char *prefix, const char *file __maybe_unused, const char *function __maybe_unused, unsigned long line __maybe_unused, const char *fmt, ... ) PRINTFLIKE(6, 7);;
+void fatal_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) NORETURN PRINTFLIKE(4, 5);
+void netdata_log_access( const char *fmt, ... ) PRINTFLIKE(1, 2);
+void netdata_log_health( const char *fmt, ... ) PRINTFLIKE(1, 2);
 
 #ifdef ENABLE_ACLK
-extern void log_aclk_message_bin( const char *data, const size_t data_len, int tx, const char *mqtt_topic, const char *message_name);
+void log_aclk_message_bin( const char *data, const size_t data_len, int tx, const char *mqtt_topic, const char *message_name);
 #endif
 
 # ifdef __cplusplus

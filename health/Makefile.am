@@ -36,13 +36,15 @@ dist_healthconfig_DATA = \
     health.d/cgroups.conf \
     health.d/cpu.conf \
     health.d/cockroachdb.conf \
+    health.d/consul.conf \
     health.d/disks.conf \
     health.d/dnsmasq_dhcp.conf \
     health.d/dns_query.conf \
-    health.d/dockerd.conf \
+    health.d/docker.conf \
+    health.d/elasticsearch.conf \
     health.d/entropy.conf \
     health.d/exporting.conf \
-    health.d/fping.conf \
+    health.d/file_descriptors.conf \
     health.d/geth.conf \
     health.d/ioping.conf \
     health.d/gearman.conf \
@@ -65,8 +67,10 @@ dist_healthconfig_DATA = \
     health.d/mysql.conf \
     health.d/net.conf \
     health.d/netfilter.conf \
-    health.d/nut.conf \
+    health.d/nvme.conf \
     health.d/pihole.conf \
+    health.d/plugin.conf \
+    health.d/ping.conf \
     health.d/postgres.conf \
     health.d/portcheck.conf \
     health.d/processes.conf \
@@ -89,12 +93,13 @@ dist_healthconfig_DATA = \
     health.d/tcp_resets.conf \
     health.d/udp_errors.conf \
     health.d/unbound.conf \
+    health.d/upsd.conf \
     health.d/vcsa.conf \
     health.d/vernemq.conf \
     health.d/vsphere.conf \
     health.d/web_log.conf \
     health.d/whoisquery.conf \
-    health.d/wmi.conf \
+    health.d/windows.conf \
     health.d/x509check.conf \
     health.d/zfs.conf \
     health.d/dbengine.conf \

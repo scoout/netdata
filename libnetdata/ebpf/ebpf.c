@@ -44,7 +44,6 @@ static int clean_kprobe_event(FILE *out, char *filename, char *father_pid, netda
 
 int clean_kprobe_events(FILE *out, int pid, netdata_ebpf_events_t *ptr)
 {
-    debug(D_EXIT, "Cleaning parent process events.");
     char filename[FILENAME_MAX + 1];
     snprintf(filename, FILENAME_MAX, "%s%s", NETDATA_DEBUGFS, "kprobe_events");
 
@@ -183,7 +182,7 @@ static int kernel_is_rejected()
         if (read_file("/proc/version", version_string, VERSION_STRING_LEN)) {
             struct utsname uname_buf;
             if (!uname(&uname_buf)) {
-                info("Cannot check kernel version");
+                netdata_log_info("Cannot check kernel version");
                 return 0;
             }
             version_string_len =
@@ -230,7 +229,7 @@ static int kernel_is_rejected()
     while ((reject_string_len = getline(&reject_string, &buf_len, kernel_reject_list) - 1) > 0) {
         if (version_string_len >= reject_string_len) {
             if (!strncmp(version_string, reject_string, reject_string_len)) {
-                info("A buggy kernel is detected");
+                netdata_log_info("A buggy kernel is detected");
                 fclose(kernel_reject_list);
                 freez(reject_string);
                 return 1;
@@ -239,7 +238,7 @@ static int kernel_is_rejected()
     }
 
     fclose(kernel_reject_list);
-    freez(reject_string);
+    free(reject_string);
 
     return 0;
 }
@@ -301,6 +300,8 @@ static int ebpf_select_max_index(int is_rhf, uint32_t kver)
     if (is_rhf > 0) { // Is Red Hat family
         if (kver >= NETDATA_EBPF_KERNEL_5_14)
             return NETDATA_IDX_V5_14;
+        else if (kver >= NETDATA_EBPF_KERNEL_5_4 && kver < NETDATA_EBPF_KERNEL_5_5) // For Oracle Linux
+            return NETDATA_IDX_V5_4;
         else if (kver >= NETDATA_EBPF_KERNEL_4_11)
             return NETDATA_IDX_V4_18;
     } else { // Kernels from kernel.org
@@ -364,20 +365,22 @@ static uint32_t ebpf_select_index(uint32_t kernels, int is_rhf, uint32_t kver)
  *     V - The kernel version in string format.
  *
  *  @param out       the vector where the name will be stored
- *  @param path
  *  @param len       the size of the out vector.
+ *  @param path      where the binaries are stored
  *  @param kver      the kernel version
  *  @param name      the eBPF program name.
  *  @param is_return is return or entry ?
  */
-static void ebpf_mount_name(char *out, size_t len, char *path, uint32_t kver, const char *name, int is_return)
+static void ebpf_mount_name(char *out, size_t len, char *path, uint32_t kver, const char *name,
+                            int is_return, int is_rhf)
 {
     char *version = ebpf_select_kernel_name(kver);
-    snprintfz(out, len, "%s/ebpf.d/%cnetdata_ebpf_%s.%s.o",
+    snprintfz(out, len, "%s/ebpf.d/%cnetdata_ebpf_%s.%s%s.o",
               path,
               (is_return) ? 'r' : 'p',
               name,
-              version);
+              version,
+              (is_rhf != -1) ? ".rhf" : "");
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -388,9 +391,10 @@ static void ebpf_mount_name(char *out, size_t len, char *path, uint32_t kver, co
  * Count the information from targets.
  *
  * @param report  the output structure
- * @param targets  vector with information about the eBPF plugin.
+ * @param targets vector with information about the eBPF plugin.
+ * @param value    factor used to update calculation
  */
-static void ebpf_stats_targets(ebpf_plugin_stats_t *report, netdata_ebpf_targets_t *targets)
+static void ebpf_stats_targets(ebpf_plugin_stats_t *report, netdata_ebpf_targets_t *targets, int value)
 {
     if (!targets) {
         report->probes = report->tracepoints = report->trampolines = 0;
@@ -401,19 +405,19 @@ static void ebpf_stats_targets(ebpf_plugin_stats_t *report, netdata_ebpf_targets
     while (targets[i].name) {
         switch (targets[i].mode) {
             case EBPF_LOAD_PROBE: {
-                report->probes++;
+                report->probes += value;
                 break;
             }
             case EBPF_LOAD_RETPROBE: {
-                report->retprobes++;
+                report->retprobes += value;
                 break;
             }
             case EBPF_LOAD_TRACEPOINT: {
-                report->tracepoints++;
+                report->tracepoints += value;
                 break;
             }
             case EBPF_LOAD_TRAMPOLINE: {
-                report->trampolines++;
+                report->trampolines += value;
                 break;
             }
         }
@@ -434,22 +438,118 @@ static void ebpf_stats_targets(ebpf_plugin_stats_t *report, netdata_ebpf_targets
  */
 void ebpf_update_stats(ebpf_plugin_stats_t *report, ebpf_module_t *em)
 {
-    report->threads++;
+    int value;
 
     // It is not necessary to report more information.
-    if (!em->enabled)
-        return;
+    if (em->enabled > NETDATA_THREAD_EBPF_FUNCTION_RUNNING)
+        value = -1;
+    else
+        value = 1;
 
-    report->running++;
+    report->threads += value;
+    report->running += value;
 
     // In theory the `else if` is useless, because when this function is called, the module should not stay in
     // EBPF_LOAD_PLAY_DICE. We have this additional condition to detect errors from developers.
     if (em->load & EBPF_LOAD_LEGACY)
-        report->legacy++;
+        report->legacy += value;
     else if (em->load & EBPF_LOAD_CORE)
-        report->core++;
+        report->core += value;
 
-    ebpf_stats_targets(report, em->targets);
+    if (em->maps_per_core)
+        report->hash_percpu += value;
+    else
+        report->hash_unique += value;
+
+    ebpf_stats_targets(report, em->targets, value);
+}
+
+/**
+ * Update Kernel memory with memory
+ *
+ * This algorithm is an adaptation of https://elixir.bootlin.com/linux/v6.1.14/source/tools/bpf/bpftool/common.c#L402
+ * to get 'memlock' data and update report.
+ *
+ * @param report  the output structure
+ * @param map     pointer to a map.
+ * @param action  What action will be done with this map.
+ */
+void ebpf_update_kernel_memory(ebpf_plugin_stats_t *report, ebpf_local_maps_t *map, ebpf_stats_action_t action)
+{
+    char filename[FILENAME_MAX+1];
+    snprintfz(filename, FILENAME_MAX, "/proc/self/fdinfo/%d", map->map_fd);
+    procfile *ff = procfile_open(filename, " \t", PROCFILE_FLAG_DEFAULT);
+    if(unlikely(!ff)) {
+        netdata_log_error("Cannot open %s", filename);
+        return;
+    }
+
+    ff = procfile_readall(ff);
+    if(unlikely(!ff))
+        return;
+
+    unsigned long j, lines = procfile_lines(ff);
+    char *memlock = { "memlock" };
+    for (j = 0; j < lines ; j++) {
+        char *cmp = procfile_lineword(ff, j,0);
+        if (!strncmp(memlock, cmp, 7)) {
+            uint64_t memsize = (uint64_t) str2l(procfile_lineword(ff, j,1));
+            switch (action) {
+                case EBPF_ACTION_STAT_ADD: {
+                    report->memlock_kern += memsize;
+                    report->hash_tables += 1;
+#ifdef NETDATA_DEV_MODE
+                    netdata_log_info("Hash table %u: %s (FD = %d) is consuming %lu bytes totalizing %lu bytes",
+                         report->hash_tables, map->name, map->map_fd, memsize, report->memlock_kern);
+#endif
+                    break;
+                }
+                case EBPF_ACTION_STAT_REMOVE: {
+                    report->memlock_kern -= memsize;
+                    report->hash_tables -= 1;
+#ifdef NETDATA_DEV_MODE
+                    netdata_log_info("Hash table %s (FD = %d) was removed releasing %lu bytes, now we have %u tables loaded totalizing %lu bytes.",
+                         map->name, map->map_fd, memsize, report->hash_tables, report->memlock_kern);
+#endif
+                    break;
+                }
+                default: {
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    procfile_close(ff);
+}
+
+/**
+ * Update Kernel memory with memory
+ *
+ * This algorithm is an adaptation of https://elixir.bootlin.com/linux/v6.1.14/source/tools/bpf/bpftool/common.c#L402
+ * to get 'memlock' data and update report.
+ *
+ * @param report  the output structure
+ * @param map     pointer to a map. Last map must fish with name = NULL
+ * @param action  should plugin add or remove values from amount.
+ */
+void ebpf_update_kernel_memory_with_vector(ebpf_plugin_stats_t *report,
+                                           ebpf_local_maps_t *maps,
+                                           ebpf_stats_action_t action)
+{
+    if (!maps)
+        return;
+
+    ebpf_local_maps_t *map;
+    int i = 0;
+    for (map = &maps[i]; maps[i].name; i++, map = &maps[i]) {
+        int fd = map->map_fd;
+        if (fd == ND_EBPF_MAP_FD_NOT_INITIALIZED)
+            continue;
+
+        ebpf_update_kernel_memory(report, map, action);
+    }
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -469,14 +569,14 @@ void ebpf_update_pid_table(ebpf_local_maps_t *pid, ebpf_module_t *em)
  * @param em        the structure with information about how the module/thread is working.
  * @param map_name  the name of the file used to log.
  */
-void ebpf_update_map_size(struct bpf_map *map, ebpf_local_maps_t *lmap, ebpf_module_t *em, const char *map_name)
+void ebpf_update_map_size(struct bpf_map *map, ebpf_local_maps_t *lmap, ebpf_module_t *em, const char *map_name __maybe_unused)
 {
     uint32_t define_size = 0;
     uint32_t apps_type = NETDATA_EBPF_MAP_PID | NETDATA_EBPF_MAP_RESIZABLE;
     if (lmap->user_input && lmap->user_input != lmap->internal_input) {
         define_size = lmap->internal_input;
 #ifdef NETDATA_INTERNAL_CHECKS
-        info("Changing map %s from size %u to %u ", map_name, lmap->internal_input, lmap->user_input);
+        netdata_log_info("Changing map %s from size %u to %u ", map_name, lmap->internal_input, lmap->user_input);
 #endif
     } else if (((lmap->type & apps_type) == apps_type) && (!em->apps_charts) && (!em->cgroup_charts)) {
         lmap->user_input = ND_EBPF_DEFAULT_MIN_PID;
@@ -507,15 +607,70 @@ void ebpf_update_map_size(struct bpf_map *map, ebpf_local_maps_t *lmap, ebpf_mod
 #endif
 }
 
+#ifdef LIBBPF_MAJOR_VERSION
 /**
- * Update Legacy map sizes
+ * Update map type
  *
- * Update map size for eBPF legacy code.
+ * Update map type with information given.
+ *
+ * @param map   the map we want to modify
+ * @param w     a structure with user input
+ */
+void ebpf_update_map_type(struct bpf_map *map, ebpf_local_maps_t *w)
+{
+    if (bpf_map__set_type(map, w->map_type)) {
+        netdata_log_error("Cannot modify map type for %s", w->name);
+    }
+}
+
+/**
+ * Define map type
+ *
+ * This PR defines the type used by hash tables according user input.
+ *
+ * @param maps          the list of maps used with a hash table.
+ * @param maps_per_core define if map type according user specification.
+ * @param kver          kernel version host is running.
+ */
+void ebpf_define_map_type(ebpf_local_maps_t *maps, int maps_per_core, int kver)
+{
+    if (!maps)
+        return;
+
+    // Before kernel 4.06 there was not percpu hash tables
+    if (kver < NETDATA_EBPF_KERNEL_4_06)
+        maps_per_core = CONFIG_BOOLEAN_NO;
+
+    int i = 0;
+    while (maps[i].name) {
+        ebpf_local_maps_t *map = &maps[i];
+        // maps_per_core is a boolean value in configuration files.
+        if (maps_per_core) {
+            if (map->map_type == BPF_MAP_TYPE_HASH)
+                map->map_type = BPF_MAP_TYPE_PERCPU_HASH;
+            else if (map->map_type == BPF_MAP_TYPE_ARRAY)
+                map->map_type = BPF_MAP_TYPE_PERCPU_ARRAY;
+        } else {
+            if (map->map_type == BPF_MAP_TYPE_PERCPU_HASH)
+                map->map_type = BPF_MAP_TYPE_HASH;
+            else if (map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
+                map->map_type = BPF_MAP_TYPE_ARRAY;
+        }
+
+        i++;
+    }
+}
+#endif
+
+/**
+ * Update Legacy map
+ *
+ * Update map for eBPF legacy code.
  *
  * @param program the structure with values read from binary.
  * @param em      the structure with information about how the module/thread is working.
  */
-static void ebpf_update_legacy_map_sizes(struct bpf_object *program, ebpf_module_t *em)
+static void ebpf_update_legacy_map(struct bpf_object *program, ebpf_module_t *em)
 {
     struct bpf_map *map;
     ebpf_local_maps_t *maps = em->maps;
@@ -525,13 +680,19 @@ static void ebpf_update_legacy_map_sizes(struct bpf_object *program, ebpf_module
     bpf_map__for_each(map, program)
     {
         const char *map_name = bpf_map__name(map);
-        int i = 0; ;
+        int i = 0;
         while (maps[i].name) {
             ebpf_local_maps_t *w = &maps[i];
-            if (w->type & NETDATA_EBPF_MAP_RESIZABLE) {
-                if (!strcmp(w->name, map_name)) {
+
+            if (!strcmp(w->name, map_name)) {
+                // Modify size
+                if (w->type & NETDATA_EBPF_MAP_RESIZABLE) {
                     ebpf_update_map_size(map, w, em, map_name);
                 }
+
+#ifdef LIBBPF_MAJOR_VERSION
+                ebpf_update_map_type(map, w);
+#endif
             }
 
             i++;
@@ -631,15 +792,15 @@ void ebpf_update_controller(int fd, ebpf_module_t *em)
 {
     uint32_t values[NETDATA_CONTROLLER_END] = {
         (em->apps_charts & NETDATA_EBPF_APPS_FLAG_YES) | em->cgroup_charts,
-        em->apps_level
+        em->apps_level, 0, 0, 0, 0
     };
     uint32_t key;
-    uint32_t end = (em->apps_level != NETDATA_APPS_NOT_SET) ? NETDATA_CONTROLLER_END : NETDATA_CONTROLLER_APPS_LEVEL;
+    uint32_t end = NETDATA_CONTROLLER_PID_TABLE_ADD;
 
     for (key = NETDATA_CONTROLLER_APPS_ENABLED; key < end; key++) {
-        int ret = bpf_map_update_elem(fd, &key, &values[key], 0);
+        int ret = bpf_map_update_elem(fd, &key, &values[key], BPF_ANY);
         if (ret)
-            error("Add key(%u) for controller table failed.", key);
+            netdata_log_error("Add key(%u) for controller table failed.", key);
     }
 }
 
@@ -694,23 +855,25 @@ struct bpf_link **ebpf_load_program(char *plugins_dir, ebpf_module_t *em, int kv
 
     uint32_t idx = ebpf_select_index(em->kernels, is_rhf, kver);
 
-    ebpf_mount_name(lpath, 4095, plugins_dir, idx, em->thread_name, em->mode);
+    ebpf_mount_name(lpath, 4095, plugins_dir, idx, em->info.thread_name, em->mode, is_rhf);
 
     // When this function is called ebpf.plugin is using legacy code, so we should reset the variable
     em->load &= ~ NETDATA_EBPF_LOAD_METHODS;
     em->load |= EBPF_LOAD_LEGACY;
 
     *obj = bpf_object__open_file(lpath, NULL);
+    if (!*obj)
+        return NULL;
+
     if (libbpf_get_error(obj)) {
-        error("Cannot open BPF object %s", lpath);
         bpf_object__close(*obj);
         return NULL;
     }
 
-    ebpf_update_legacy_map_sizes(*obj, em);
+    ebpf_update_legacy_map(*obj, em);
 
     if (bpf_object__load(*obj)) {
-        error("ERROR: loading BPF object file failed %s\n", lpath);
+        netdata_log_error("ERROR: loading BPF object file failed %s\n", lpath);
         bpf_object__close(*obj);
         return NULL;
     }
@@ -721,7 +884,7 @@ struct bpf_link **ebpf_load_program(char *plugins_dir, ebpf_module_t *em, int kv
     size_t count_programs =  ebpf_count_programs(*obj);
 
 #ifdef NETDATA_INTERNAL_CHECKS
-    info("eBPF program %s loaded with success!", lpath);
+    netdata_log_info("eBPF program %s loaded with success!", lpath);
 #endif
 
     return ebpf_attach_programs(*obj, count_programs, em->names);
@@ -734,7 +897,7 @@ char *ebpf_find_symbol(char *search)
     snprintfz(filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, NETDATA_KALLSYMS);
     procfile *ff = procfile_open(filename, " \t", PROCFILE_FLAG_DEFAULT);
     if(unlikely(!ff)) {
-        error("Cannot open %s%s", netdata_configured_host_prefix, NETDATA_KALLSYMS);
+        netdata_log_error("Cannot open %s%s", netdata_configured_host_prefix, NETDATA_KALLSYMS);
         return ret;
     }
 
@@ -807,7 +970,7 @@ static void ebpf_select_mode_string(char *output, size_t len, netdata_run_mode_t
  *
  * Convert the string given as argument to value present in enum.
  *
- * @param str  value read from configuraion file.
+ * @param str  value read from configuration file.
  *
  * @return It returns the value to be used.
  */
@@ -899,7 +1062,7 @@ netdata_ebpf_program_loaded_t ebpf_convert_core_type(char *str, netdata_run_mode
 /**
  * Adjust Thread Load
  *
- * Adjust thread configuraton according specified load.
+ * Adjust thread configuration according specified load.
  *
  * @param mod   the main structure that will be adjusted.
  * @param file  the btf file used with thread.
@@ -950,7 +1113,7 @@ struct btf *ebpf_load_btf_file(char *path, char *filename)
     snprintfz(fullpath, PATH_MAX, "%s/%s", path, filename);
     struct btf *ret = ebpf_parse_btf_file(fullpath);
     if (!ret)
-        info("Your environment does not have BTF file %s/%s. The plugin will work with 'legacy' code.",
+        netdata_log_info("Your environment does not have BTF file %s/%s. The plugin will work with 'legacy' code.",
              path, filename);
 
     return ret;
@@ -1031,14 +1194,19 @@ static void ebpf_update_target_with_conf(ebpf_module_t *em, netdata_ebpf_program
  *
  * @param btf_file a pointer to the loaded btf file.
  * @parma load     current value.
+ * @param btf_file a pointer to the loaded btf file.
+ * @param is_rhf is Red Hat family?
  *
  * @return it returns the new load mode.
  */
-static netdata_ebpf_load_mode_t ebpf_select_load_mode(struct btf *btf_file, netdata_ebpf_load_mode_t load)
+static netdata_ebpf_load_mode_t ebpf_select_load_mode(struct btf *btf_file, netdata_ebpf_load_mode_t load,
+                                                      int kver, int is_rh)
 {
 #ifdef LIBBPF_MAJOR_VERSION
     if ((load & EBPF_LOAD_CORE) || (load & EBPF_LOAD_PLAY_DICE)) {
-        load = (!btf_file) ? EBPF_LOAD_LEGACY : EBPF_LOAD_CORE;
+        // Quick fix for Oracle linux 8.x
+        load = (!btf_file || (is_rh && (kver >= NETDATA_EBPF_KERNEL_5_4 && kver < NETDATA_EBPF_KERNEL_5_5))) ?
+               EBPF_LOAD_LEGACY : EBPF_LOAD_CORE;
     }
 #else
     load = EBPF_LOAD_LEGACY;
@@ -1053,15 +1221,17 @@ static netdata_ebpf_load_mode_t ebpf_select_load_mode(struct btf *btf_file, netd
  * Update configuration for a specific thread.
  *
  * @param modules   structure that will be updated
- * @oaram origin    specify the configuration file loaded
+ * @param origin    specify the configuration file loaded
  * @param btf_file a pointer to the loaded btf file.
+ * @param is_rhf is Red Hat family?
  */
-void ebpf_update_module_using_config(ebpf_module_t *modules, netdata_ebpf_load_mode_t origin, struct btf *btf_file)
+void ebpf_update_module_using_config(ebpf_module_t *modules, netdata_ebpf_load_mode_t origin, struct btf *btf_file,
+                                     int kver, int is_rh)
 {
     char default_value[EBPF_MAX_MODE_LENGTH + 1];
     ebpf_select_mode_string(default_value, EBPF_MAX_MODE_LENGTH, modules->mode);
-    char *value = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_LOAD_MODE, default_value);
-    modules->mode = ebpf_select_mode(value);
+    char *load_mode = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_LOAD_MODE, default_value);
+    modules->mode = ebpf_select_mode(load_mode);
 
     modules->update_every = (int)appconfig_get_number(modules->cfg, EBPF_GLOBAL_SECTION,
                                                      EBPF_CFG_UPDATE_EVERY, modules->update_every);
@@ -1075,19 +1245,42 @@ void ebpf_update_module_using_config(ebpf_module_t *modules, netdata_ebpf_load_m
     modules->pid_map_size = (uint32_t)appconfig_get_number(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_PID_SIZE,
                                                            modules->pid_map_size);
 
-    value = ebpf_convert_load_mode_to_string(modules->load & NETDATA_EBPF_LOAD_METHODS);
-    value = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_TYPE_FORMAT, value);
-    netdata_ebpf_load_mode_t load = epbf_convert_string_to_load_mode(value);
-    load = ebpf_select_load_mode(btf_file, load);
+    modules->lifetime = (uint32_t) appconfig_get_number(modules->cfg, EBPF_GLOBAL_SECTION,
+                                                        EBPF_CFG_LIFETIME, EBPF_DEFAULT_LIFETIME);
+
+    char *value = ebpf_convert_load_mode_to_string(modules->load & NETDATA_EBPF_LOAD_METHODS);
+    char *type_format = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_TYPE_FORMAT, value);
+    netdata_ebpf_load_mode_t load = epbf_convert_string_to_load_mode(type_format);
+    load = ebpf_select_load_mode(btf_file, load, kver, is_rh);
     modules->load = origin | load;
 
-    value = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_CORE_ATTACH, EBPF_CFG_ATTACH_TRAMPOLINE);
-    netdata_ebpf_program_loaded_t fill_lm = ebpf_convert_core_type(value, modules->mode);
+    char *core_attach = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_CORE_ATTACH, EBPF_CFG_ATTACH_TRAMPOLINE);
+    netdata_ebpf_program_loaded_t fill_lm = ebpf_convert_core_type(core_attach, modules->mode);
     ebpf_update_target_with_conf(modules, fill_lm);
 
     value = ebpf_convert_collect_pid_to_string(modules->apps_level);
-    value = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_COLLECT_PID, value);
-    modules->apps_level =  ebpf_convert_string_to_apps_level(value);
+    char *collect_pid = appconfig_get(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_COLLECT_PID, value);
+    modules->apps_level =  ebpf_convert_string_to_apps_level(collect_pid);
+
+    modules->maps_per_core = appconfig_get_boolean(modules->cfg, EBPF_GLOBAL_SECTION, EBPF_CFG_MAPS_PER_CORE,
+                                                   modules->maps_per_core);
+    if (kver < NETDATA_EBPF_KERNEL_4_06)
+        modules->maps_per_core = CONFIG_BOOLEAN_NO;
+
+#ifdef NETDATA_DEV_MODE
+    netdata_log_info("The thread %s was configured with: mode = %s; update every = %d; apps = %s; cgroup = %s; ebpf type format = %s; ebpf co-re tracing = %s; collect pid = %s; maps per core = %s, lifetime=%u",
+         modules->info.thread_name,
+         load_mode,
+         modules->update_every,
+         (modules->apps_charts)?"enabled":"disabled",
+         (modules->cgroup_charts)?"enabled":"disabled",
+         type_format,
+         core_attach,
+         collect_pid,
+         (modules->maps_per_core)?"enabled":"disabled",
+         modules->lifetime
+         );
+#endif
 }
 
 /**
@@ -1100,8 +1293,10 @@ void ebpf_update_module_using_config(ebpf_module_t *modules, netdata_ebpf_load_m
  *
  * @param em       the module structure
  * @param btf_file a pointer to the loaded btf file.
+ * @param is_rhf is Red Hat family?
+ * @param kver   the kernel version
  */
-void ebpf_update_module(ebpf_module_t *em, struct btf *btf_file)
+void ebpf_update_module(ebpf_module_t *em, struct btf *btf_file, int kver, int is_rh)
 {
     char filename[FILENAME_MAX+1];
     netdata_ebpf_load_mode_t origin;
@@ -1110,16 +1305,16 @@ void ebpf_update_module(ebpf_module_t *em, struct btf *btf_file)
     if (!ebpf_load_config(em->cfg, filename)) {
         ebpf_mount_config_name(filename, FILENAME_MAX, ebpf_stock_config_dir, em->config_file);
         if (!ebpf_load_config(em->cfg, filename)) {
-            error("Cannot load the ebpf configuration file %s", em->config_file);
+            netdata_log_error("Cannot load the ebpf configuration file %s", em->config_file);
             return;
         }
-        // If user defined data globaly, we will have here EBPF_LOADED_FROM_USER, we need to consider this, to avoid
+        // If user defined data globally, we will have here EBPF_LOADED_FROM_USER, we need to consider this, to avoid
         // forcing users to configure thread by thread.
         origin = (!(em->load & NETDATA_EBPF_LOAD_SOURCE)) ? EBPF_LOADED_FROM_STOCK : em->load & NETDATA_EBPF_LOAD_SOURCE;
     } else
         origin = EBPF_LOADED_FROM_USER;
 
-    ebpf_update_module_using_config(em, origin, btf_file);
+    ebpf_update_module_using_config(em, origin, btf_file, kver, is_rh);
 }
 
 /**
@@ -1128,7 +1323,7 @@ void ebpf_update_module(ebpf_module_t *em, struct btf *btf_file)
  * Apps and cgroup has internal cleanup that needs attaching tracers to release_task, to avoid overload the function
  * we will enable this integration by default, if and only if, we are running with trampolines.
  *
- * @param em   a poiter to the main thread structure.
+ * @param em   a pointer to the main thread structure.
  * @param mode is the mode used with different
  */
 void ebpf_adjust_apps_cgroup(ebpf_module_t *em, netdata_ebpf_program_loaded_t mode)
@@ -1149,7 +1344,8 @@ void ebpf_adjust_apps_cgroup(ebpf_module_t *em, netdata_ebpf_program_loaded_t mo
  * Helper used to get address from /proc/kallsym
  *
  * @param fa address structure
- * @param fd file descriptor loaded inside kernel.
+ * @param fd file descriptor loaded inside kernel. If a negative value is given
+ *           the function will load address and it won't update hash table.
  */
 void ebpf_load_addresses(ebpf_addresses_t *fa, int fd)
 {
@@ -1171,11 +1367,17 @@ void ebpf_load_addresses(ebpf_addresses_t *fa, int fd)
         char *fcnt = procfile_lineword(ff, l, 2);
         uint32_t hash = simple_hash(fcnt);
         if (fa->hash == hash && !strcmp(fcnt, fa->function)) {
-            char addr[128];
-            snprintf(addr, 127, "0x%s", procfile_lineword(ff, l, 0));
-            fa->addr = (unsigned long) strtoul(addr, NULL, 16);
-            uint32_t key = 0;
-            bpf_map_update_elem(fd, &key, &fa->addr, BPF_ANY);
+            char *type = procfile_lineword(ff, l, 2);
+            fa->type = type[0];
+            if (fd > 0) {
+                char addr[128];
+                snprintf(addr, 127, "0x%s", procfile_lineword(ff, l, 0));
+                fa->addr = (unsigned long) strtoul(addr, NULL, 16);
+                uint32_t key = 0;
+                bpf_map_update_elem(fd, &key, &fa->addr, BPF_ANY);
+            } else
+                fa->addr = 1;
+            break;
         }
     }
 
@@ -1322,7 +1524,7 @@ int ebpf_is_tracepoint_enabled(char *subsys, char *eventname)
 static int ebpf_change_tracing_values(char *subsys, char *eventname, char *value)
 {
     if (strcmp("0", value) && strcmp("1", value)) {
-        error("Invalid value given to either enable or disable a tracepoint.");
+        netdata_log_error("Invalid value given to either enable or disable a tracepoint.");
         return -1;
     }
 

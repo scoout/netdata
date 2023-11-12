@@ -3,8 +3,9 @@
 #ifndef NETDATA_EBPF_SWAP_H
 #define NETDATA_EBPF_SWAP_H 1
 
-// Module name
+// Module name & description
 #define NETDATA_EBPF_MODULE_NAME_SWAP "swap"
+#define NETDATA_EBPF_SWAP_MODULE_DESC "Monitor swap space usage. This thread is integrated with apps and cgroup."
 
 #define NETDATA_SWAP_SLEEP_MS 850000ULL
 
@@ -42,10 +43,8 @@ enum swap_counters {
     NETDATA_SWAP_END
 };
 
-extern netdata_publish_swap_t **swap_pid;
-
-extern void *ebpf_swap_thread(void *ptr);
-extern void ebpf_swap_create_apps_charts(struct ebpf_module *em, void *ptr);
+void *ebpf_swap_thread(void *ptr);
+void ebpf_swap_create_apps_charts(struct ebpf_module *em, void *ptr);
 
 extern struct config swap_config;
 extern netdata_ebpf_targets_t swap_targets[];

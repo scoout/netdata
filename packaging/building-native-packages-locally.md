@@ -1,11 +1,6 @@
-<!--
-title: How to build native (DEB/RPM) packages locally for testing
-description: Instructions for developers who need to build native packages locally for testing.
-custom_edit_url: https://github.com/netdata/netdata/edit/master/packaging/building-native-packages-locally.md
-keywords: [Netdata native package, Netdata RPM, Netdata DEB, Testing native packages Netdata]
--->
+# Build native (DEB/RPM) packages for testing
 
-# How to build native (DEB/RPM) packages locally for testing
+This document provides instructions for developers who need to build native packages locally for testing.
 
 ## Requirements
 
@@ -31,7 +26,7 @@ podman run -it --rm -e VERSION=0.1 -v $PWD:/netdata netdata/package-builders:<ta
 
 The `<tag>` should be the lowercase distribution name with no spaces, followed by the
 release of that distribution. For example, `centos7` to build on CentOS 7, or `ubuntu20.04`
-to build on Ubuntu 20.04. Note that we use Alma Linux for builds on CentOS/RHEL 8 or newer. See
+to build on Ubuntu 20.04. Note that we use Rocky Linux for builds on CentOS/RHEL 8 or newer. See
 [netdata/package-builders](https://hub.docker.com/r/netdata/package-builders/tags) for all available tags.
 
 The value passed in the `VERSION` environment variable can be any version number accepted by the type of package

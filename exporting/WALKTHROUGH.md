@@ -1,10 +1,3 @@
-<!--
-title: "Exporting to Netdata, Prometheus, Grafana stack"
-description: "Using Netdata in conjunction with Prometheus and Grafana."
-custom_edit_url: https://github.com/netdata/netdata/edit/master/exporting/WALKTHROUGH.md
-sidebar_label: Netdata, Prometheus, Grafana stack
--->
-
 # Netdata, Prometheus, Grafana stack
 
 ## Intro
@@ -64,7 +57,7 @@ command to run (`/bin/bash`) and then chooses the base container images (`centos
 be sitting inside the shell of the container.
 
 After we have entered the shell we can install Netdata. This process could not be easier. If you take a look at [this
-link](/packaging/installer/README.md), the Netdata devs give us several one-liners to install Netdata. I have not had
+link](https://github.com/netdata/netdata/blob/master/packaging/installer/README.md), the Netdata devs give us several one-liners to install Netdata. I have not had
 any issues with these one liners and their bootstrapping scripts so far (If you guys run into anything do share). Run
 the following command in your container.
 
@@ -81,10 +74,10 @@ this is your first time using Netdata I suggest you take a look around. The amou
 Next I want to draw your attention to a particular endpoint. Navigate to
 <http://localhost:19999/api/v1/allmetrics?format=prometheus&help=yes> In your browser. This is the endpoint which
 publishes all the metrics in a format which Prometheus understands. Let's take a look at one of these metrics.
-`netdata_system_cpu_percentage_average{chart="system.cpu",family="cpu",dimension="system"} 0.0831255 1501271696000` This
-metric is representing several things which I will go in more details in the section on Prometheus. For now understand
-that this metric: `netdata_system_cpu_percentage_average` has several labels: (`chart`, `family`, `dimension`). This
-corresponds with the first cpu chart you see on the Netdata dashboard.
+`netdata_disk_space_GiB_average{chart="disk_space._run",dimension="avail",family="/run",mount_point="/run",filesystem="tmpfs",mount_root="/"} 0.0298195 1684951093000`
+This metric is representing several things which I will go in more details in the section on Prometheus. For now understand
+that this metric: `netdata_disk_space_GiB_average` has several labels: (`chart`, `family`, `dimension`, `mountt_point`, `filesystem`, `mount_root`).
+This corresponds with disk space you see on the Netdata dashboard.
 
 ![](https://github.com/ldelossa/NetdataTutorial/raw/master/Screen%20Shot%202017-07-28%20at%204.00.45%20PM.png)
 
@@ -145,12 +138,13 @@ As explained we have two key elements in Prometheus metrics. We have the _metric
 granularity between metrics. Let's use our previous example to further explain.
 
 ```conf
-netdata_system_cpu_percentage_average{chart="system.cpu",family="cpu",dimension="system"} 0.0831255 1501271696000
+netdata_disk_space_GiB_average{chart="disk_space._run",dimension="avail",family="/run",mount_point="/run",filesystem="tmpfs",mount_root="/"} 0.0298195 1684951093000
 ```
 
-Here our metric is `netdata_system_cpu_percentage_average` and our labels are `chart`, `family`, and `dimension`. The
-last two values constitute the actual metric value for the metric type (gauge, counter, etc…). We can begin graphing
-system metrics with this information, but first we need to hook up Prometheus to poll Netdata stats.
+Here our metric is `netdata_disk_space_GiB_average` and our common labels are `chart`, `family`, and `dimension`. The
+last two values constitute the actual metric value for the metric type (gauge, counter, etc…). We also have specific
+label for this chart named `mount_point`,`filesystem`, and `mount_root`. We can begin graphing system metrics with this information,
+but first we need to hook up Prometheus to poll Netdata stats.
 
 Let's move our attention to Prometheus's configuration. Prometheus gets it config from the file located (in our example)
 at `/opt/prometheus/prometheus.yml`. I won't spend an extensive amount of time going over the configuration values
@@ -223,7 +217,7 @@ the `chart` dimension. If you'd like you can combine the `chart` and `instance` 
 Let's give this a try: `netdata_system_cpu_percentage_average{chart="system.cpu", instance="netdata:19999"}`
 
 This is the basics of using Prometheus to query Netdata. I'd advise everyone at this point to read [this
-page](/exporting/prometheus/README.md#using-netdata-with-prometheus). The key point here is that Netdata can export metrics from
+page](https://github.com/netdata/netdata/blob/master/exporting/prometheus/README.md#using-netdata-with-prometheus). The key point here is that Netdata can export metrics from
 its internal DB or can send metrics _as-collected_ by specifying the `source=as-collected` URL parameter like so.
 <http://localhost:19999/api/v1/allmetrics?format=prometheus&help=yes&types=yes&source=as-collected> If you choose to use
 this method you will need to use Prometheus's set of functions here: <https://prometheus.io/docs/querying/functions/> to

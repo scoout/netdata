@@ -85,14 +85,14 @@ int init_connectors(struct engine *engine)
 #endif
                 break;
             default:
-                error("EXPORTING: unknown exporting connector type");
+                netdata_log_error("EXPORTING: unknown exporting connector type");
                 return 1;
         }
 
         // dispatch the instance worker thread
         int error = uv_thread_create(&instance->thread, instance->worker, instance);
         if (error) {
-            error("EXPORTING: cannot create thread worker. uv_thread_create(): %s", uv_strerror(error));
+            netdata_log_error("EXPORTING: cannot create thread worker. uv_thread_create(): %s", uv_strerror(error));
             return 1;
         }
         char threadname[NETDATA_THREAD_NAME_MAX + 1];
@@ -113,7 +113,7 @@ static size_t base64_encode(unsigned char *input, size_t input_size, char *outpu
                            "abcdefghijklmnopqrstuvwxyz"
                            "0123456789+/";
     if ((input_size / 3 + 1) * 4 >= output_size) {
-        error("Output buffer for encoding size=%zu is not large enough for %zu-bytes input", output_size, input_size);
+        netdata_log_error("Output buffer for encoding size=%zu is not large enough for %zu-bytes input", output_size, input_size);
         return 0;
     }
     size_t count = 0;
@@ -123,7 +123,7 @@ static size_t base64_encode(unsigned char *input, size_t input_size, char *outpu
         output[1] = lookup[(value >> 12) & 0x3f];
         output[2] = lookup[(value >> 6) & 0x3f];
         output[3] = lookup[value & 0x3f];
-        //error("Base-64 encode (%04x) -> %c %c %c %c\n", value, output[0], output[1], output[2], output[3]);
+        //netdata_log_error("Base-64 encode (%04x) -> %c %c %c %c\n", value, output[0], output[1], output[2], output[3]);
         output += 4;
         input += 3;
         input_size -= 3;
@@ -136,7 +136,7 @@ static size_t base64_encode(unsigned char *input, size_t input_size, char *outpu
             output[1] = lookup[(value >> 6) & 0x3f];
             output[2] = lookup[value & 0x3f];
             output[3] = '=';
-            //error("Base-64 encode (%06x) -> %c %c %c %c\n", (value>>2)&0xffff, output[0], output[1], output[2], output[3]);
+            //netdata_log_error("Base-64 encode (%06x) -> %c %c %c %c\n", (value>>2)&0xffff, output[0], output[1], output[2], output[3]);
             count += 4;
             output[4] = '\0';
             break;
@@ -146,7 +146,7 @@ static size_t base64_encode(unsigned char *input, size_t input_size, char *outpu
             output[1] = lookup[value & 0x3f];
             output[2] = '=';
             output[3] = '=';
-            //error("Base-64 encode (%06x) -> %c %c %c %c\n", value, output[0], output[1], output[2], output[3]);
+            //netdata_log_error("Base-64 encode (%06x) -> %c %c %c %c\n", value, output[0], output[1], output[2], output[3]);
             count += 4;
             output[4] = '\0';
             break;
@@ -171,8 +171,8 @@ void simple_connector_init(struct instance *instance)
     if (connector_specific_data->first_buffer)
         return;
 
-    connector_specific_data->header = buffer_create(0);
-    connector_specific_data->buffer = buffer_create(0);
+    connector_specific_data->header = buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
+    connector_specific_data->buffer = buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
 
     // create a ring buffer
     struct simple_connector_buffer *first_buffer = NULL;
@@ -195,7 +195,7 @@ void simple_connector_init(struct instance *instance)
     connector_specific_data->last_buffer = connector_specific_data->first_buffer;
 
     if (*instance->config.username || *instance->config.password) {
-        BUFFER *auth_string = buffer_create(0);
+        BUFFER *auth_string = buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
 
         buffer_sprintf(auth_string, "%s:%s", instance->config.username, instance->config.password);
 

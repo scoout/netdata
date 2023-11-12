@@ -177,14 +177,6 @@ const char *rrd_memory_mode_name(RRD_MEMORY_MODE id)
     return RRD_MEMORY_MODE_NONE_NAME;
 }
 
-int foreach_host_variable_callback(RRDHOST *host, int (*callback)(RRDVAR *rv, void *data), void *data)
-{
-    (void)host;
-    (void)callback;
-    (void)data;
-    return 0;
-}
-
 void rrdset_update_heterogeneous_flag(RRDSET *st)
 {
     (void)st;
@@ -206,11 +198,10 @@ time_t __mock_rrddim_query_latest_time(STORAGE_METRIC_HANDLE *db_metric_handle)
     return mock_type(time_t);
 }
 
-void __mock_rrddim_query_init(STORAGE_METRIC_HANDLE *db_metric_handle, struct rrddim_query_handle *handle, time_t start_time, time_t end_time, TIER_QUERY_FETCH tier_query_fetch_type)
+void __mock_rrddim_query_init(STORAGE_METRIC_HANDLE *db_metric_handle, struct rrddim_query_handle *handle, time_t start_time, time_t end_time)
 {
     (void)db_metric_handle;
     (void)handle;
-    (void)tier_query_fetch_type;
 
     function_called();
     check_expected(start_time);
@@ -247,13 +238,18 @@ void rrdcalc_update_rrdlabels(RRDSET *st)
     (void)st;
 }
 
-void rrdpush_sender_send_this_host_variable_now(RRDHOST *host, RRDVAR *rv)
+void rrdpush_sender_send_this_host_variable_now(RRDHOST *host, const RRDVAR_ACQUIRED *rva)
 {
     (void)host;
-    (void)rv;
+    (void)rva;
 }
 
 void db_execute(const char *cmd)
 {
     (void)cmd;
+}
+
+DICTIONARY *rrdfamily_rrdvars_dict(const RRDFAMILY_ACQUIRED *rfa) {
+    (void)rfa;
+    return NULL;
 }

@@ -1,20 +1,10 @@
-<!--
-title: "Custom dashboards"
-description: "Build custom dashboards with key metrics from one or more nodes running the Netdata Agent and host them anywhere."
-custom_edit_url: https://github.com/netdata/netdata/edit/master/web/gui/custom/README.md
--->
-
 # Custom dashboards
 
-You can:
+You can build custom Netdata dashboards just with some basic HTML knowledge.
 
--   create your own dashboards using simple HTML (no javascript is required for
-    basic dashboards)
--   utilize any or all of the available chart libraries, on the same dashboard
--   use data from one or more Netdata servers, on the same dashboard
--   host your dashboard HTML page on any web server, anywhere
-
-You can also add Netdata charts to existing web pages.
+Custom dashboards allow you to  utilize any or all of the available chart libraries, on the same dashboard.
+You can use data from one or more Netdata servers, on the same dashboard and host your dashboard HTML page on 
+any web server, anywhere. You can also add Netdata charts to existing web pages.
 
 Check this **[very simple working example of a custom dashboard](http://netdata.firehol.org/demo.html)**.
 
@@ -26,9 +16,10 @@ If you plan to put the dashboard on TV, check out
 [tv.html](http://netdata.firehol.org/tv.html). Here's is a screenshot of it,
 monitoring two servers on the same page:
 
-![image](https://cloud.githubusercontent.com/assets/2662304/14252187/d8d5f78e-fa8e-11e5-990d-99821d38c874.png)
+<img width="954" alt="image" src="https://user-images.githubusercontent.com/43294513/233790352-2780fd51-3293-49fe-8ad9-30ad9a362c60.png"/>
 
---
+
+
 
 ## Web directory
 
@@ -72,7 +63,6 @@ header:
 </html>
 ```
 
----
 
 ## dashboard.js
 
@@ -163,7 +153,7 @@ that do not specify a Netdata server, add this before loading `dashboard.js`:
 <script type="text/javascript">var netdataServer = "http://your.netdata.server:19999";</script>
 ```
 
----
+
 
 ## Adding charts
 
@@ -242,7 +232,7 @@ Each chart can get data from a different Netdata server. You can specify the Net
  ></div>
 ```
 
-If you have ephemeral monitoring setup ([More info here](/streaming/README.md#monitoring-ephemeral-nodes)) and have no
+If you have ephemeral monitoring setup ([More info here](https://github.com/netdata/netdata/blob/master/streaming/README.md#monitoring-ephemeral-nodes)) and have no
 direct access to the nodes dashboards, you can use the following:
 
 ```html
@@ -366,7 +356,7 @@ select specific dimensions using this:
 ```
 
 Netdata supports coma (`,`) or pipe (`|`) separated [simple
-patterns](/libnetdata/simple_pattern/README.md) for dimensions. By default it
+patterns](https://github.com/netdata/netdata/blob/master/libnetdata/simple_pattern/README.md) for dimensions. By default it
 searches for both dimension IDs and dimension NAMEs. You can control the target
 of the match with: `data-append-options="match-ids"` or
 `data-append-options="match-names"`. Spaces in `data-dimensions=""` are matched
@@ -434,7 +424,7 @@ it, using this:
 
 ### API options
 
-You can append Netdata **[REST API v1](/web/api/README.md)** data options, using this:
+You can append Netdata **[REST API v1](https://github.com/netdata/netdata/blob/master/web/api/README.md)** data options, using this:
 
 ```html
 <div data-netdata="unique.id"

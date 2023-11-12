@@ -3,12 +3,11 @@
 #ifndef NETDATA_EBPF_MOUNT_H
 #define NETDATA_EBPF_MOUNT_H 1
 
-// Module name
+// Module name & description
 #define NETDATA_EBPF_MODULE_NAME_MOUNT "mount"
+#define NETDATA_EBPF_MOUNT_MODULE_DESC "Show calls to syscalls mount(2) and umount(2)."
 
 #define NETDATA_EBPF_MOUNT_SYSCALL 2
-
-#define NETDATA_LATENCY_MOUNT_SLEEP_MS 700000ULL
 
 #define NETDATA_EBPF_MOUNT_CALLS "call"
 #define NETDATA_EBPF_MOUNT_ERRORS "error"
@@ -38,7 +37,7 @@ enum netdata_mount_syscalls {
 };
 
 extern struct config mount_config;
-extern void *ebpf_mount_thread(void *ptr);
+void *ebpf_mount_thread(void *ptr);
 extern netdata_ebpf_targets_t mount_targets[];
 
 #endif /* NETDATA_EBPF_MOUNT_H */

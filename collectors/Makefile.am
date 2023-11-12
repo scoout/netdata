@@ -7,11 +7,10 @@ SUBDIRS = \
     apps.plugin \
     cgroups.plugin \
     charts.d.plugin \
-    checks.plugin \
     cups.plugin \
+    debugfs.plugin \
     diskspace.plugin \
     timex.plugin \
-    fping.plugin \
     ioping.plugin \
     freebsd.plugin \
     freeipmi.plugin \
@@ -26,6 +25,7 @@ SUBDIRS = \
     statsd.plugin \
     ebpf.plugin \
     tc.plugin \
+    systemd-journal.plugin \
     $(NULL)
 
 usercustompluginsconfigdir=$(configdir)/custom-plugins.d

@@ -1,6 +1,10 @@
 <!--
 title: "Average or Mean"
+sidebar_label: "Average or Mean"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/queries/average/README.md
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api/Queries"
 -->
 
 # Average or Mean
@@ -17,10 +21,10 @@ average = sum(numbers) / count(numbers)
 
 ## how to use
 
-Use it in alarms like this:
+Use it in alerts like this:
 
 ```
- alarm: my_alarm
+ alarm: my_alert
     on: my_chart
 lookup: average -1m unaligned of my_dimension
   warn: $this > 1000

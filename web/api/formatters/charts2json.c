@@ -10,7 +10,7 @@ const char* get_release_channel() {
     if (use_stable == -1) {
         char filename[FILENAME_MAX + 1];
         snprintfz(filename, FILENAME_MAX, "%s/.environment", netdata_configured_user_config_dir);
-        procfile *ff = procfile_open(filename, "=", PROCFILE_FLAG_DEFAULT);
+        procfile *ff = procfile_open(filename, "=", PROCFILE_FLAG_NO_ERROR_ON_FILE_IO);
         if (ff) {
             procfile_set_quotes(ff, "'\"");
             ff = procfile_readall(ff);
@@ -36,9 +36,9 @@ const char* get_release_channel() {
     return (use_stable)?"stable":"nightly";
 }
 
-void charts2json(RRDHOST *host, BUFFER *wb, int skip_volatile, int show_archived) {
+void charts2json(RRDHOST *host, BUFFER *wb) {
     static char *custom_dashboard_info_js_filename = NULL;
-    size_t c, dimensions = 0, memory = 0, alarms = 0;
+    size_t c = 0, dimensions = 0, memory = 0, alarms = 0;
     RRDSET *st;
 
     time_t now = now_realtime_sec();
@@ -46,42 +46,31 @@ void charts2json(RRDHOST *host, BUFFER *wb, int skip_volatile, int show_archived
     if(unlikely(!custom_dashboard_info_js_filename))
         custom_dashboard_info_js_filename = config_get(CONFIG_SECTION_WEB, "custom dashboard_info.js", "");
 
-    buffer_sprintf(wb, "{\n"
-                       "\t\"hostname\": \"%s\""
-                       ",\n\t\"version\": \"%s\""
-                       ",\n\t\"release_channel\": \"%s\""
-                       ",\n\t\"os\": \"%s\""
-                       ",\n\t\"timezone\": \"%s\""
-                       ",\n\t\"update_every\": %d"
-                       ",\n\t\"history\": %ld"
-                       ",\n\t\"memory_mode\": \"%s\""
-                       ",\n\t\"custom_info\": \"%s\""
-                       ",\n\t\"charts\": {"
-                   , rrdhost_hostname(host)
-                   , rrdhost_program_version(host)
-                   , get_release_channel()
-                   , rrdhost_os(host)
-                   , rrdhost_timezone(host)
-                   , host->rrd_update_every
-                   , host->rrd_history_entries
-                   , rrd_memory_mode_name(host->rrd_memory_mode)
-                   , custom_dashboard_info_js_filename
-    );
+    buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
 
-    c = 0;
+    buffer_json_member_add_string(wb, "hostname", rrdhost_hostname(host));
+    buffer_json_member_add_string(wb, "version", rrdhost_program_version(host));
+    buffer_json_member_add_string(wb, "release_channel", get_release_channel());
+    buffer_json_member_add_string(wb, "os", rrdhost_os(host));
+    buffer_json_member_add_string(wb, "timezone", rrdhost_timezone(host));
+    buffer_json_member_add_int64(wb, "update_every", host->rrd_update_every);
+    buffer_json_member_add_int64(wb, "history", host->rrd_history_entries);
+    buffer_json_member_add_string(wb, "memory_mode", rrd_memory_mode_name(host->rrd_memory_mode));
+    buffer_json_member_add_string(wb, "custom_info", custom_dashboard_info_js_filename);
+
+    buffer_json_member_add_object(wb, "charts");
     rrdset_foreach_read(st, host) {
-        if ((!show_archived && rrdset_is_available_for_viewers(st)) || (show_archived && rrdset_is_archived(st))) {
-            if(c) buffer_strcat(wb, ",");
-            buffer_strcat(wb, "\n\t\t\"");
-            buffer_strcat(wb, rrdset_id(st));
-            buffer_strcat(wb, "\": ");
-            rrdset2json(st, wb, &dimensions, &memory, skip_volatile);
+        if (rrdset_is_available_for_viewers(st)) {
 
+            buffer_json_member_add_object(wb, rrdset_id(st));
+            rrdset2json(st, wb, &dimensions, &memory);
+            buffer_json_object_close(wb);
+            st->last_accessed_time_s = now;
             c++;
-            st->last_accessed_time = now;
         }
     }
     rrdset_foreach_done(st);
+    buffer_json_object_close(wb);
 
     RRDCALC *rc;
     foreach_rrdcalc_in_rrdhost_read(host, rc) {
@@ -90,102 +79,26 @@ void charts2json(RRDHOST *host, BUFFER *wb, int skip_volatile, int show_archived
     }
     foreach_rrdcalc_in_rrdhost_done(rc);
 
-    buffer_sprintf(wb
-                   , "\n\t}"
-                     ",\n\t\"charts_count\": %zu"
-                     ",\n\t\"dimensions_count\": %zu"
-                     ",\n\t\"alarms_count\": %zu"
-                     ",\n\t\"rrd_memory_bytes\": %zu"
-                     ",\n\t\"hosts_count\": %zu"
-                     ",\n\t\"hosts\": ["
-                   , c
-                   , dimensions
-                   , alarms
-                   , memory
-                   , rrd_hosts_available
-    );
+    buffer_json_member_add_int64(wb, "charts_count", (int64_t) c);
+    buffer_json_member_add_int64(wb, "dimensions_count", (int64_t) dimensions);
+    buffer_json_member_add_int64(wb, "alarms_count", (int64_t)alarms);
+    buffer_json_member_add_int64(wb, "rrd_memory_bytes", (int64_t)memory);
+    buffer_json_member_add_int64(wb, "hosts_count", (int64_t) rrdhost_hosts_available());
 
-    if(unlikely(rrd_hosts_available > 1)) {
+    buffer_json_member_add_array(wb, "hosts");
+    {
         rrd_rdlock();
-
-        size_t found = 0;
         RRDHOST *h;
         rrdhost_foreach_read(h) {
-            if(!rrdhost_should_be_removed(h, host, now) && !rrdhost_flag_check(h, RRDHOST_FLAG_ARCHIVED)) {
-                buffer_sprintf(wb
-                               , "%s\n\t\t{"
-                                 "\n\t\t\t\"hostname\": \"%s\""
-                                 "\n\t\t}"
-                               , (found > 0) ? "," : ""
-                               , rrdhost_hostname(h)
-                );
-
-                found++;
+            if(!rrdhost_should_be_removed(h, host, now) /*&& !rrdhost_flag_check(h, RRDHOST_FLAG_ARCHIVED) */) {
+                buffer_json_add_array_item_object(wb);
+                buffer_json_member_add_string(wb, "hostname", rrdhost_hostname(h));
+                buffer_json_object_close(wb);
             }
         }
-
         rrd_unlock();
     }
-    else {
-        buffer_sprintf(wb
-                       , "\n\t\t{"
-                         "\n\t\t\t\"hostname\": \"%s\""
-                         "\n\t\t}"
-                       , rrdhost_hostname(host)
-        );
-    }
+    buffer_json_array_close(wb);
 
-    buffer_sprintf(wb, "\n\t]\n}\n");
-}
-
-// generate collectors list for the api/v1/info call
-
-struct collector {
-    const char *plugin;
-    const char *module;
-};
-
-struct array_printer {
-    int c;
-    BUFFER *wb;
-};
-
-static int print_collector_callback(const DICTIONARY_ITEM *item __maybe_unused, void *entry, void *data) {
-    struct array_printer *ap = (struct array_printer *)data;
-    BUFFER *wb = ap->wb;
-    struct collector *col=(struct collector *) entry;
-    if(ap->c) buffer_strcat(wb, ",");
-    buffer_strcat(wb, "\n\t\t{\n\t\t\t\"plugin\": \"");
-    buffer_strcat(wb, col->plugin);
-    buffer_strcat(wb, "\",\n\t\t\t\"module\": \"");
-    buffer_strcat(wb, col->module);
-    buffer_strcat(wb, "\"\n\t\t}");
-    (ap->c)++;
-    return 0;
-}
-
-void chartcollectors2json(RRDHOST *host, BUFFER *wb) {
-    DICTIONARY *dict = dictionary_create(DICT_OPTION_SINGLE_THREADED);
-    RRDSET *st;
-    char name[500];
-
-    time_t now = now_realtime_sec();
-    rrdset_foreach_read(st, host) {
-        if (rrdset_is_available_for_viewers(st)) {
-            struct collector col = {
-                    .plugin = rrdset_plugin_name(st),
-                    .module = rrdset_module_name(st)
-            };
-            sprintf(name, "%s:%s", col.plugin, col.module);
-            dictionary_set(dict, name, &col, sizeof(struct collector));
-            st->last_accessed_time = now;
-        }
-    }
-    rrdset_foreach_done(st);
-    struct array_printer ap = {
-            .c = 0,
-            .wb = wb
-    };
-    dictionary_walkthrough_read(dict, print_collector_callback, &ap);
-    dictionary_destroy(dict);
+    buffer_json_finalize(wb);
 }

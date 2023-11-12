@@ -1,6 +1,10 @@
 <!--
 title: "Min"
+sidebar_label: "Min"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/queries/min/README.md
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api/Queries"
 -->
 
 # Min
@@ -9,10 +13,10 @@ This module finds the min value in the time-frame given.
 
 ## how to use
 
-Use it in alarms like this:
+Use it in alerts like this:
 
 ```
- alarm: my_alarm
+ alarm: my_alert
     on: my_chart
 lookup: min -1m unaligned of my_dimension
   warn: $this > 1000

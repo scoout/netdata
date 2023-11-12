@@ -1,10 +1,14 @@
 <!--
-title: "Netdata simple patterns"
+title: "Simple patterns"
 description: "Netdata supports simple patterns, which are less cryptic versions of regular expressions. Use familiar notation for powerful results."
 custom_edit_url: https://github.com/netdata/netdata/edit/master/libnetdata/simple_pattern/README.md
+sidebar_label: "Simple patterns"
+learn_status: "Published"
+learn_topic_type: "Tasks"
+learn_rel_path: "Developers/libnetdata"
 -->
 
-# Netdata simple patterns
+# Simple patterns
 
 Unix prefers regular expressions. But they are just too hard, too cryptic
 to use, write and understand.
@@ -12,7 +16,7 @@ to use, write and understand.
 So, Netdata supports **simple patterns**.
 
 Simple patterns are a space separated list of words, that can have `*`
-as a wildcard. Each world may use any number of `*`. Simple patterns
+as a wildcard. Each word may use any number of `*`. Simple patterns
 allow **negative** matches by prefixing a word with `!`.
 
 So, `pattern = !*bad* *` will match anything, except all those that

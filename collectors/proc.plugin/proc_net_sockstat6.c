@@ -130,14 +130,13 @@ int do_proc_net_sockstat6(int update_every, usec_t dt) {
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT6_NAME
-                    , NETDATA_CHART_PRIO_IPV6_TCP
+                    , NETDATA_CHART_PRIO_IPV6_TCP_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat6_root.tcp6_inuse);
         rrdset_done(st);
@@ -164,14 +163,13 @@ int do_proc_net_sockstat6(int update_every, usec_t dt) {
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT6_NAME
-                    , NETDATA_CHART_PRIO_IPV6_UDP
+                    , NETDATA_CHART_PRIO_IPV6_UDP_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat6_root.udp6_inuse);
         rrdset_done(st);
@@ -198,14 +196,13 @@ int do_proc_net_sockstat6(int update_every, usec_t dt) {
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT6_NAME
-                    , NETDATA_CHART_PRIO_IPV6_UDPLITE
+                    , NETDATA_CHART_PRIO_IPV6_UDPLITE_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat6_root.udplite6_inuse);
         rrdset_done(st);
@@ -232,14 +229,13 @@ int do_proc_net_sockstat6(int update_every, usec_t dt) {
                     , "sockets"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT6_NAME
-                    , NETDATA_CHART_PRIO_IPV6_RAW
+                    , NETDATA_CHART_PRIO_IPV6_RAW_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat6_root.raw6_inuse);
         rrdset_done(st);
@@ -266,14 +262,13 @@ int do_proc_net_sockstat6(int update_every, usec_t dt) {
                     , "fragments"
                     , PLUGIN_PROC_NAME
                     , PLUGIN_PROC_MODULE_NET_SOCKSTAT6_NAME
-                    , NETDATA_CHART_PRIO_IPV6_FRAGMENTS
+                    , NETDATA_CHART_PRIO_IPV6_FRAGMENTS_SOCKETS
                     , update_every
                     , RRDSET_TYPE_LINE
             );
 
             rd_inuse    = rrddim_add(st, "inuse",     NULL,   1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
-        else rrdset_next(st);
 
         rrddim_set_by_pointer(st, rd_inuse,    (collected_number)sockstat6_root.frag6_inuse);
         rrdset_done(st);

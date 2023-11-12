@@ -16,7 +16,10 @@ static ebpf_local_maps_t mdflush_maps[] = {
         .internal_input = 1024,
         .user_input = 0,
         .type = NETDATA_EBPF_MAP_STATIC,
-        .map_fd = ND_EBPF_MAP_FD_NOT_INITIALIZED
+        .map_fd = ND_EBPF_MAP_FD_NOT_INITIALIZED,
+#ifdef LIBBPF_MAJOR_VERSION
+        .map_type = BPF_MAP_TYPE_PERCPU_HASH
+#endif
     },
     /* end */
     {
@@ -28,6 +31,10 @@ static ebpf_local_maps_t mdflush_maps[] = {
     }
 };
 
+netdata_ebpf_targets_t mdflush_targets[] = { {.name = "md_flush_request", .mode = EBPF_LOAD_TRAMPOLINE},
+                                           {.name = NULL, .mode = EBPF_LOAD_TRAMPOLINE}};
+
+
 // store for "published" data from the reader thread, which the collector
 // thread will write to netdata agent.
 static avl_tree_lock mdflush_pub;
@@ -35,10 +42,113 @@ static avl_tree_lock mdflush_pub;
 // tmp store for mdflush values we get from a per-CPU eBPF map.
 static mdflush_ebpf_val_t *mdflush_ebpf_vals = NULL;
 
-static struct netdata_static_thread mdflush_threads = {"MDFLUSH KERNEL",
-                                                    NULL, NULL, 1, NULL,
-                                                    NULL, NULL };
-static enum ebpf_threads_status ebpf_mdflush_exited = NETDATA_THREAD_EBPF_RUNNING;
+#ifdef LIBBPF_MAJOR_VERSION
+/**
+ * Disable probes
+ *
+ * Disable probes to use trampolines.
+ *
+ * @param obj the loaded object structure.
+ */
+static inline void ebpf_disable_probes(struct mdflush_bpf *obj)
+{
+    bpf_program__set_autoload(obj->progs.netdata_md_flush_request_kprobe, false);
+}
+
+/**
+ * Disable trampolines
+ *
+ * Disable trampoliness to use probes.
+ *
+ * @param obj the loaded object structure.
+ */
+static inline void ebpf_disable_trampoline(struct mdflush_bpf *obj)
+{
+    bpf_program__set_autoload(obj->progs.netdata_md_flush_request_fentry, false);
+}
+
+/**
+ * Set Trampoline
+ *
+ * Define target to attach trampoline
+ *
+ * @param obj the loaded object structure.
+ */
+static void ebpf_set_trampoline_target(struct mdflush_bpf *obj)
+{
+    bpf_program__set_attach_target(obj->progs.netdata_md_flush_request_fentry, 0,
+                                   mdflush_targets[NETDATA_MD_FLUSH_REQUEST].name);
+}
+
+/**
+ * Load probe
+ *
+ * Load probe to monitor internal function.
+ *
+ * @param obj the loaded object structure.
+ */
+static inline int ebpf_load_probes(struct mdflush_bpf *obj)
+{
+    obj->links.netdata_md_flush_request_kprobe = bpf_program__attach_kprobe(obj->progs.netdata_md_flush_request_kprobe,
+                                                                            false,
+                                                                            mdflush_targets[NETDATA_MD_FLUSH_REQUEST].name);
+    return libbpf_get_error(obj->links.netdata_md_flush_request_kprobe);
+}
+
+/**
+ * Load and Attach
+ *
+ * Load and attach bpf codes according user selection.
+ *
+ * @param obj the loaded object structure.
+ * @param em the structure with configuration
+ */
+static inline int ebpf_mdflush_load_and_attach(struct mdflush_bpf *obj, ebpf_module_t *em)
+{
+    int mode = em->targets[NETDATA_MD_FLUSH_REQUEST].mode;
+    if (mode == EBPF_LOAD_TRAMPOLINE) { // trampoline
+        ebpf_disable_probes(obj);
+
+        ebpf_set_trampoline_target(obj);
+    } else // kprobe
+        ebpf_disable_trampoline(obj);
+
+    int ret = mdflush_bpf__load(obj);
+    if (ret) {
+        fprintf(stderr, "failed to load BPF object: %d\n", ret);
+        return -1;
+    }
+
+    if (mode == EBPF_LOAD_TRAMPOLINE)
+        ret = mdflush_bpf__attach(obj);
+    else
+        ret = ebpf_load_probes(obj);
+
+    return ret;
+}
+
+#endif
+
+/**
+ * Obsolete global
+ *
+ * Obsolete global charts created by thread.
+ *
+ * @param em a pointer to `struct ebpf_module`
+ */
+static void ebpf_obsolete_mdflush_global(ebpf_module_t *em)
+{
+    ebpf_write_chart_obsolete("mdstat",
+                              "mdstat_flush",
+                              "",
+                              "MD flushes",
+                              "flushes",
+                              "flush (eBPF)",
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              NETDATA_CHART_PRIO_MDSTAT_FLUSH,
+                              em->update_every);
+}
 
 /**
  * MDflush exit
@@ -50,32 +160,28 @@ static enum ebpf_threads_status ebpf_mdflush_exited = NETDATA_THREAD_EBPF_RUNNIN
 static void mdflush_exit(void *ptr)
 {
     ebpf_module_t *em = (ebpf_module_t *)ptr;
-    if (!em->enabled) {
-        em->enabled = NETDATA_MAIN_THREAD_EXITED;
-        return;
+
+    if (em->enabled == NETDATA_THREAD_EBPF_FUNCTION_RUNNING) {
+        pthread_mutex_lock(&lock);
+
+        ebpf_obsolete_mdflush_global(em);
+
+        pthread_mutex_unlock(&lock);
+        fflush(stdout);
     }
 
-    ebpf_mdflush_exited = NETDATA_THREAD_EBPF_STOPPING;
-}
+    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps, EBPF_ACTION_STAT_REMOVE);
 
-/**
- * CLeanup
- *
- * Clean allocated memory.
- *
- * @param ptr thread data.
- */
-static void mdflush_cleanup(void *ptr)
-{
-    ebpf_module_t *em = (ebpf_module_t *)ptr;
-    if (ebpf_mdflush_exited != NETDATA_THREAD_EBPF_STOPPED)
-        return;
+    if (em->objects) {
+        ebpf_unload_legacy_code(em->objects, em->probe_links);
+        em->objects = NULL;
+        em->probe_links = NULL;
+    }
 
-    freez(mdflush_ebpf_vals);
-    freez(mdflush_threads.thread);
-
-    mdflush_threads.enabled = NETDATA_MAIN_THREAD_EXITED;
-    em->enabled = NETDATA_MAIN_THREAD_EXITED;
+    pthread_mutex_lock(&ebpf_exit_cleanup);
+    em->enabled = NETDATA_THREAD_EBPF_STOPPED;
+    ebpf_update_stats(&plugin_statistics, em);
+    pthread_mutex_unlock(&ebpf_exit_cleanup);
 }
 
 /**
@@ -102,7 +208,14 @@ static int mdflush_val_cmp(void *a, void *b)
     }
 }
 
-static void mdflush_read_count_map()
+/**
+ * Read count map
+ *
+ * Read the hash table and store data to allocated vectors.
+ *
+ * @param maps_per_core do I need to read all cores?
+ */
+static void mdflush_read_count_map(int maps_per_core)
 {
     int mapfd = mdflush_maps[MDFLUSH_MAP_COUNT].map_fd;
     mdflush_ebpf_key_t curr_key = (uint32_t)-1;
@@ -152,7 +265,7 @@ static void mdflush_read_count_map()
         // we must add up count value for this record across all CPUs.
         uint64_t total_cnt = 0;
         int i;
-        int end = (running_on_kernel < NETDATA_KERNEL_V4_15) ? 1 : ebpf_nprocs;
+        int end = (!maps_per_core) ? 1 : ebpf_nprocs;
         for (i = 0; i < end; i++) {
             total_cnt += mdflush_ebpf_vals[i];
         }
@@ -164,37 +277,10 @@ static void mdflush_read_count_map()
         if (v_is_new) {
             avl_t *check = avl_insert_lock(&mdflush_pub, (avl_t *)v);
             if (check != (avl_t *)v) {
-                error("Internal error, cannot insert the AVL tree.");
+                netdata_log_error("Internal error, cannot insert the AVL tree.");
             }
         }
     }
-}
-
-/**
- * Read eBPF maps for mdflush.
- */
-static void *mdflush_reader(void *ptr)
-{
-    netdata_thread_cleanup_push(mdflush_cleanup, ptr);
-    heartbeat_t hb;
-    heartbeat_init(&hb);
-
-    ebpf_module_t *em = (ebpf_module_t *)ptr;
-
-    usec_t step = NETDATA_MDFLUSH_SLEEP_MS * em->update_every;
-    while (ebpf_mdflush_exited == NETDATA_THREAD_EBPF_RUNNING) {
-        usec_t dt = heartbeat_next(&hb, step);
-        UNUSED(dt);
-        if (ebpf_mdflush_exited == NETDATA_THREAD_EBPF_STOPPING)
-            break;
-
-        mdflush_read_count_map();
-    }
-
-    ebpf_mdflush_exited = NETDATA_THREAD_EBPF_STOPPED;
-
-    netdata_thread_cleanup_pop(1);
-    return NULL;
 }
 
 static void mdflush_create_charts(int update_every)
@@ -243,42 +329,92 @@ static void mdflush_collector(ebpf_module_t *em)
 {
     mdflush_ebpf_vals = callocz(ebpf_nprocs, sizeof(mdflush_ebpf_val_t));
 
+    int update_every = em->update_every;
     avl_init_lock(&mdflush_pub, mdflush_val_cmp);
-
-    // create reader thread.
-    mdflush_threads.thread = mallocz(sizeof(netdata_thread_t));
-    mdflush_threads.start_routine = mdflush_reader;
-    netdata_thread_create(
-        mdflush_threads.thread,
-        mdflush_threads.name,
-        NETDATA_THREAD_OPTION_DEFAULT,
-        mdflush_reader,
-        em
-    );
 
     // create chart and static dims.
     pthread_mutex_lock(&lock);
-    mdflush_create_charts(em->update_every);
+    mdflush_create_charts(update_every);
     ebpf_update_stats(&plugin_statistics, em);
+    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps, EBPF_ACTION_STAT_ADD);
     pthread_mutex_unlock(&lock);
 
     // loop and read from published data until ebpf plugin is closed.
     heartbeat_t hb;
     heartbeat_init(&hb);
-    usec_t step = em->update_every * USEC_PER_SEC;
-    while (!ebpf_exit_plugin) {
-        (void)heartbeat_next(&hb, step);
-        if (ebpf_exit_plugin)
-            break;
+    int counter = update_every - 1;
+    int maps_per_core = em->maps_per_core;
+    uint32_t running_time = 0;
+    uint32_t lifetime = em->lifetime;
+    while (!ebpf_plugin_exit && running_time < lifetime) {
+        (void)heartbeat_next(&hb, USEC_PER_SEC);
 
+        if (ebpf_plugin_exit || ++counter != update_every)
+            continue;
+
+        counter = 0;
+        mdflush_read_count_map(maps_per_core);
+        pthread_mutex_lock(&lock);
         // write dims now for all hitherto discovered devices.
-        write_begin_chart("mdstat", "mdstat_flush");
+        ebpf_write_begin_chart("mdstat", "mdstat_flush", "");
         avl_traverse_lock(&mdflush_pub, mdflush_write_dims, NULL);
-        write_end_chart();
+        ebpf_write_end_chart();
 
         pthread_mutex_unlock(&lock);
+
+        pthread_mutex_lock(&ebpf_exit_cleanup);
+        if (running_time && !em->running_time)
+            running_time = update_every;
+        else
+            running_time += update_every;
+
+        em->running_time = running_time;
+        pthread_mutex_unlock(&ebpf_exit_cleanup);
     }
 }
+
+/*
+ * Load BPF
+ *
+ * Load BPF files.
+ *
+ * @param em the structure with configuration
+ *
+ * @return It returns 0 on success and -1 otherwise.
+ */
+static int ebpf_mdflush_load_bpf(ebpf_module_t *em)
+{
+    int ret = 0;
+    if (em->load & EBPF_LOAD_LEGACY) {
+        em->probe_links = ebpf_load_program(ebpf_plugin_dir, em, running_on_kernel, isrh, &em->objects);
+        if (!em->probe_links) {
+            ret = -1;
+        }
+    }
+#ifdef LIBBPF_MAJOR_VERSION
+    else {
+        mdflush_bpf_obj = mdflush_bpf__open();
+        if (!mdflush_bpf_obj)
+            ret = -1;
+        else {
+            ret = ebpf_mdflush_load_and_attach(mdflush_bpf_obj, em);
+            if (ret && em->targets[NETDATA_MD_FLUSH_REQUEST].mode == EBPF_LOAD_TRAMPOLINE) {
+                mdflush_bpf__destroy(mdflush_bpf_obj);
+                mdflush_bpf_obj = mdflush_bpf__open();
+                if (!mdflush_bpf_obj)
+                    ret = -1;
+                else {
+                    em->targets[NETDATA_MD_FLUSH_REQUEST].mode = EBPF_LOAD_PROBE;
+                    ret = ebpf_mdflush_load_and_attach(mdflush_bpf_obj, em);
+                }
+            }
+        }
+    }
+#endif
+
+    return ret;
+}
+
 
 /**
  * mdflush thread.
@@ -295,26 +431,24 @@ void *ebpf_mdflush_thread(void *ptr)
 
     char *md_flush_request = ebpf_find_symbol("md_flush_request");
     if (!md_flush_request) {
-        em->enabled = CONFIG_BOOLEAN_NO;
-        error("Cannot monitor MD devices, because md is not loaded.");
-    }
-    freez(md_flush_request);
-
-    if (!em->enabled) {
+        netdata_log_error("Cannot monitor MD devices, because md is not loaded.");
         goto endmdflush;
     }
 
-    em->probe_links = ebpf_load_program(ebpf_plugin_dir, em, running_on_kernel, isrh, &em->objects);
-    if (!em->probe_links) {
-        em->enabled = CONFIG_BOOLEAN_NO;
+#ifdef LIBBPF_MAJOR_VERSION
+    ebpf_define_map_type(em->maps, em->maps_per_core, running_on_kernel);
+    ebpf_adjust_thread_load(em, default_btf);
+#endif
+    if (ebpf_mdflush_load_bpf(em)) {
+        netdata_log_error("Cannot load eBPF software.");
         goto endmdflush;
     }
 
     mdflush_collector(em);
 
 endmdflush:
-    if (!em->enabled)
-        ebpf_update_disabled_plugin_stats(em);
+    freez(md_flush_request);
+    ebpf_update_disabled_plugin_stats(em);
 
     netdata_thread_cleanup_pop(1);
 

@@ -85,12 +85,13 @@ static struct netwireless {
 
 static void netwireless_free_st(struct netwireless *wireless_dev)
 {
-    if (wireless_dev->st_status) rrdset_is_obsolete(wireless_dev->st_status);
-    if (wireless_dev->st_link) rrdset_is_obsolete(wireless_dev->st_link);
-    if (wireless_dev->st_level) rrdset_is_obsolete(wireless_dev->st_level);
-    if (wireless_dev->st_noise) rrdset_is_obsolete(wireless_dev->st_noise);
-    if (wireless_dev->st_discarded_packets) rrdset_is_obsolete(wireless_dev->st_discarded_packets);
-    if (wireless_dev->st_missed_beacon) rrdset_is_obsolete(wireless_dev->st_missed_beacon);
+    if (wireless_dev->st_status) rrdset_is_obsolete___safe_from_collector_thread(wireless_dev->st_status);
+    if (wireless_dev->st_link) rrdset_is_obsolete___safe_from_collector_thread(wireless_dev->st_link);
+    if (wireless_dev->st_level) rrdset_is_obsolete___safe_from_collector_thread(wireless_dev->st_level);
+    if (wireless_dev->st_noise) rrdset_is_obsolete___safe_from_collector_thread(wireless_dev->st_noise);
+    if (wireless_dev->st_discarded_packets)
+        rrdset_is_obsolete___safe_from_collector_thread(wireless_dev->st_discarded_packets);
+    if (wireless_dev->st_missed_beacon) rrdset_is_obsolete___safe_from_collector_thread(wireless_dev->st_missed_beacon);
 
     wireless_dev->st_status = NULL;
     wireless_dev->st_link = NULL;
@@ -269,8 +270,6 @@ int do_proc_net_wireless(int update_every, usec_t dt)
 
                 add_labels_to_wireless(wireless_dev, wireless_dev->st_status);
             }
-            else
-                rrdset_next(wireless_dev->st_status);
 
             rrddim_set_by_pointer(wireless_dev->st_status, wireless_dev->rd_status,
                                   (collected_number)wireless_dev->status);
@@ -302,8 +301,6 @@ int do_proc_net_wireless(int update_every, usec_t dt)
 
                 add_labels_to_wireless(wireless_dev, wireless_dev->st_link);
             }
-            else
-                rrdset_next(wireless_dev->st_link);
 
             if (unlikely(!wireless_dev->st_level)) {
                 wireless_dev->st_level = rrdset_create_localhost(
@@ -325,8 +322,6 @@ int do_proc_net_wireless(int update_every, usec_t dt)
 
                 add_labels_to_wireless(wireless_dev, wireless_dev->st_level);
             }
-            else
-                rrdset_next(wireless_dev->st_level);
 
             if (unlikely(!wireless_dev->st_noise)) {
                 wireless_dev->st_noise = rrdset_create_localhost(
@@ -348,8 +343,6 @@ int do_proc_net_wireless(int update_every, usec_t dt)
 
                 add_labels_to_wireless(wireless_dev, wireless_dev->st_noise);
             }
-            else
-                rrdset_next(wireless_dev->st_noise);
 
             rrddim_set_by_pointer(wireless_dev->st_link, wireless_dev->rd_link, (collected_number)wireless_dev->link);
             rrdset_done(wireless_dev->st_link);
@@ -393,8 +386,6 @@ int do_proc_net_wireless(int update_every, usec_t dt)
 
                 add_labels_to_wireless(wireless_dev, wireless_dev->st_discarded_packets);
             }
-            else
-                rrdset_next(wireless_dev->st_discarded_packets);
 
             rrddim_set_by_pointer(wireless_dev->st_discarded_packets, wireless_dev->rd_nwid, (collected_number)wireless_dev->nwid);
             rrddim_set_by_pointer(wireless_dev->st_discarded_packets, wireless_dev->rd_crypt, (collected_number)wireless_dev->crypt);
@@ -429,11 +420,8 @@ int do_proc_net_wireless(int update_every, usec_t dt)
 
                 add_labels_to_wireless(wireless_dev, wireless_dev->st_missed_beacon);
             }
-            else
-                rrdset_next(wireless_dev->st_missed_beacon);
 
             rrddim_set_by_pointer(wireless_dev->st_missed_beacon, wireless_dev->rd_missed_beacon, (collected_number)wireless_dev->missed_beacon);
-
             rrdset_done(wireless_dev->st_missed_beacon);
         }
 

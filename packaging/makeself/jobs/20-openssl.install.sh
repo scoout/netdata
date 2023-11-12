@@ -3,11 +3,10 @@
 
 # shellcheck source=packaging/makeself/functions.sh
 . "$(dirname "${0}")/../functions.sh" "${@}" || exit 1
-
+# Source of truth for all the packages we bundle in static builds
+. "$(dirname "${0}")/../bundled-packages"
 # shellcheck disable=SC2015
 [ "${GITHUB_ACTIONS}" = "true" ] && echo "::group::Building OpenSSL" || true
-
-version="$(cat "$(dirname "${0}")/../openssl.version")"
 
 export CFLAGS='-fno-lto -pipe'
 export LDFLAGS='-static'
@@ -29,20 +28,29 @@ if [ -d "${cache}" ]; then
   CACHE_HIT=1
 else
   echo "No cached copy of build directory for openssl found, fetching sources instead."
-  run git clone --branch "${version}" --single-branch --depth 1 git://git.openssl.org/openssl.git "${NETDATA_MAKESELF_PATH}/tmp/openssl"
+  run git clone --branch "${OPENSSL_VERSION}" --single-branch --depth 1 "${OPENSSL_SOURCE}" "${NETDATA_MAKESELF_PATH}/tmp/openssl"
   CACHE_HIT=0
 fi
 
 cd "${NETDATA_MAKESELF_PATH}/tmp/openssl" || exit 1
 
 if [ "${CACHE_HIT:-0}" -eq 0 ]; then
-    run ./config -static no-tests --prefix=/openssl-static --openssldir=/opt/netdata/etc/ssl
+    sed -i "s/disable('static', 'pic', 'threads');/disable('static', 'pic');/" Configure
+    run ./config -static threads no-tests --prefix=/openssl-static --openssldir=/opt/netdata/etc/ssl
     run make -j "$(nproc)"
 fi
 
 run make -j "$(nproc)" install_sw
 
+if [ -d "/openssl-static/lib" ]; then
+  cd "/openssl-static" || exit 1
+  ln -s "lib" "lib64" || true
+  cd - || exit 1
+fi
+
 store_cache openssl "${NETDATA_MAKESELF_PATH}/tmp/openssl"
+
+perl configdata.pm --dump
 
 # shellcheck disable=SC2015
 [ "${GITHUB_ACTIONS}" = "true" ] && echo "::endgroup::" || true

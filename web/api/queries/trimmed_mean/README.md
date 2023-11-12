@@ -1,7 +1,11 @@
 <!--
 title: "Trimmed Mean"
+sidebar_label: "Trimmed Mean"
 description: "Use trimmed-mean in API queries and health entities to find the average value from a sample, eliminating any unwanted spikes in the returned metrics."
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/queries/trimmed_mean/README.md
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api/Queries"
 -->
 
 # Trimmed Mean
@@ -27,10 +31,10 @@ Any percentage may be requested using the `group_options` query parameter.
 
 ## how to use
 
-Use it in alarms like this:
+Use it in alerts like this:
 
 ```
- alarm: my_alarm
+ alarm: my_alert
     on: my_chart
 lookup: trimmed-mean5 -1m unaligned of my_dimension
   warn: $this > 1000

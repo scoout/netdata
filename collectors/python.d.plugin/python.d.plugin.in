@@ -582,8 +582,8 @@ class Plugin:
         try:
             statuses = JobsStatuses().from_file(abs_path)
         except Exception as error:
-            self.log.error("[{0}] config file invalid YAML format: {1}".format(
-                module_name, ' '.join([v.strip() for v in str(error).split('\n')])))
+            self.log.error("'{0}' invalid JSON format: {1}".format(
+                abs_path, ' '.join([v.strip() for v in str(error).split('\n')])))
             return None
         self.log.debug("'{0}' is loaded".format(abs_path))
         return statuses
@@ -875,6 +875,17 @@ def get_modules_to_run(cmd):
 def main():
     cmd = parse_command_line()
     log = PythonDLogger()
+
+    level = os.getenv('NETDATA_LOG_SEVERITY_LEVEL') or str()
+    level = level.lower()
+    if level == 'debug':
+        log.logger.severity = 'DEBUG'
+    elif level == 'info':
+        log.logger.severity = 'INFO'
+    elif level == 'warn' or level == 'warning':
+        log.logger.severity = 'WARNING'
+    elif level == 'err' or level == 'error':
+        log.logger.severity = 'ERROR'
 
     if cmd.debug:
         log.logger.severity = 'DEBUG'

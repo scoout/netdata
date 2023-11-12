@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "aclk_util.h"
+
+#ifdef ENABLE_ACLK
+
 #include "aclk_proxy.h"
 
 #include "daemon/common.h"
@@ -120,10 +123,10 @@ struct topic_name {
     { .id = ACLK_TOPICID_CHART_RESET,           .name = "reset-charts"             },
     { .id = ACLK_TOPICID_RETENTION_UPDATED,     .name = "chart-retention-updated"  },
     { .id = ACLK_TOPICID_NODE_INFO,             .name = "node-instance-info"       },
-    { .id = ACLK_TOPICID_ALARM_LOG,             .name = "alarm-log"                },
-    { .id = ACLK_TOPICID_ALARM_HEALTH,          .name = "alarm-health"             },
+    { .id = ACLK_TOPICID_ALARM_LOG,             .name = "alarm-log-v2"             },
+    { .id = ACLK_TOPICID_ALARM_CHECKPOINT,      .name = "alarm-checkpoint"         },
     { .id = ACLK_TOPICID_ALARM_CONFIG,          .name = "alarm-config"             },
-    { .id = ACLK_TOPICID_ALARM_SNAPSHOT,        .name = "alarm-snapshot"           },
+    { .id = ACLK_TOPICID_ALARM_SNAPSHOT,        .name = "alarm-snapshot-v2"        },
     { .id = ACLK_TOPICID_NODE_COLLECTORS,       .name = "node-instance-collectors" },
     { .id = ACLK_TOPICID_CTXS_SNAPSHOT,         .name = "contexts-snapshot"        },
     { .id = ACLK_TOPICID_CTXS_UPDATED,          .name = "contexts-updated"         },
@@ -146,7 +149,7 @@ enum aclk_topics compulsory_topics[] = {
     ACLK_TOPICID_RETENTION_UPDATED,
     ACLK_TOPICID_NODE_INFO,
     ACLK_TOPICID_ALARM_LOG,
-    ACLK_TOPICID_ALARM_HEALTH,
+    ACLK_TOPICID_ALARM_CHECKPOINT,
     ACLK_TOPICID_ALARM_CONFIG,
     ACLK_TOPICID_ALARM_SNAPSHOT,
     ACLK_TOPICID_NODE_COLLECTORS,
@@ -185,7 +188,7 @@ static void topic_generate_final(struct aclk_topic *t) {
 
     rrdhost_aclk_state_lock(localhost);
     if (unlikely(!localhost->aclk_state.claimed_id)) {
-        error("This should never be called if agent not claimed");
+        netdata_log_error("This should never be called if agent not claimed");
         rrdhost_aclk_state_unlock(localhost);
         return;
     }
@@ -214,19 +217,19 @@ static int topic_cache_add_topic(struct json_object *json, struct aclk_topic *to
     while (!json_object_iter_equal(&it, &itEnd)) {
         if (!strcmp(json_object_iter_peek_name(&it), JSON_TOPIC_KEY_NAME)) {
             if (json_object_get_type(json_object_iter_peek_value(&it)) != json_type_string) {
-                error("topic dictionary key \"" JSON_TOPIC_KEY_NAME "\" is expected to be json_type_string");
+                netdata_log_error("topic dictionary key \"" JSON_TOPIC_KEY_NAME "\" is expected to be json_type_string");
                 return 1;
             }
             topic->topic_id = topic_name_to_id(json_object_get_string(json_object_iter_peek_value(&it)));
             if (topic->topic_id == ACLK_TOPICID_UNKNOWN) {
-                debug(D_ACLK, "topic dictionary has unknown topic name \"%s\"", json_object_get_string(json_object_iter_peek_value(&it)));
+                netdata_log_debug(D_ACLK, "topic dictionary has unknown topic name \"%s\"", json_object_get_string(json_object_iter_peek_value(&it)));
             }
             json_object_iter_next(&it);
             continue;
         }
         if (!strcmp(json_object_iter_peek_name(&it), JSON_TOPIC_KEY_TOPIC)) {
             if (json_object_get_type(json_object_iter_peek_value(&it)) != json_type_string) {
-                error("topic dictionary key \"" JSON_TOPIC_KEY_TOPIC "\" is expected to be json_type_string");
+                netdata_log_error("topic dictionary key \"" JSON_TOPIC_KEY_TOPIC "\" is expected to be json_type_string");
                 return 1;
             }
             topic->topic_recvd = strdupz(json_object_get_string(json_object_iter_peek_value(&it)));
@@ -234,12 +237,12 @@ static int topic_cache_add_topic(struct json_object *json, struct aclk_topic *to
             continue;
         }
 
-        error("topic dictionary has Unknown/Unexpected key \"%s\" in topic description. Ignoring!", json_object_iter_peek_name(&it));
+        netdata_log_error("topic dictionary has Unknown/Unexpected key \"%s\" in topic description. Ignoring!", json_object_iter_peek_name(&it));
         json_object_iter_next(&it);
     }
 
     if (!topic->topic_recvd) {
-        error("topic dictionary Missig compulsory key %s", JSON_TOPIC_KEY_TOPIC);
+        netdata_log_error("topic dictionary Missig compulsory key %s", JSON_TOPIC_KEY_TOPIC);
         return 1;
     }
 
@@ -255,7 +258,7 @@ int aclk_generate_topic_cache(struct json_object *json)
 
     size_t array_size = json_object_array_length(json);
     if (!array_size) {
-        error("Empty topic list!");
+        netdata_log_error("Empty topic list!");
         return 1;
     }
 
@@ -267,19 +270,19 @@ int aclk_generate_topic_cache(struct json_object *json)
     for (size_t i = 0; i < array_size; i++) {
         obj = json_object_array_get_idx(json, i);
         if (json_object_get_type(obj) != json_type_object) {
-            error("expected json_type_object");
+            netdata_log_error("expected json_type_object");
             return 1;
         }
         aclk_topic_cache[i] = callocz(1, sizeof(struct aclk_topic));
         if (topic_cache_add_topic(obj, aclk_topic_cache[i])) {
-            error("failed to parse topic @idx=%d", (int)i);
+            netdata_log_error("failed to parse topic @idx=%d", (int)i);
             return 1;
         }
     }
 
     for (int i = 0; compulsory_topics[i] != ACLK_TOPICID_UNKNOWN; i++) {
         if (!aclk_get_topic(compulsory_topics[i])) {
-            error("missing compulsory topic \"%s\" in password response from cloud", topic_id_to_name(compulsory_topics[i]));
+            netdata_log_error("missing compulsory topic \"%s\" in password response from cloud", topic_id_to_name(compulsory_topics[i]));
             return 1;
         }
     }
@@ -295,7 +298,7 @@ int aclk_generate_topic_cache(struct json_object *json)
 const char *aclk_get_topic(enum aclk_topics topic)
 {
     if (!aclk_topic_cache) {
-        error("Topic cache not initialized");
+        netdata_log_error("Topic cache not initialized");
         return NULL;
     }
 
@@ -303,8 +306,26 @@ const char *aclk_get_topic(enum aclk_topics topic)
         if (aclk_topic_cache[i]->topic_id == topic)
             return aclk_topic_cache[i]->topic;
     }
-    error("Unknown topic");
+    netdata_log_error("Unknown topic");
     return NULL;
+}
+
+/*
+ * Allows iterating all topics in topic cache without
+ * having to resort to callbacks. 
+ */
+
+const char *aclk_topic_cache_iterate(aclk_topic_cache_iter_t *iter)
+{
+    if (!aclk_topic_cache) {
+        netdata_log_error("Topic cache not initialized when %s was called.", __FUNCTION__);
+        return NULL;
+    }
+
+    if (*iter >= aclk_topic_cache_items)
+        return NULL;
+
+    return aclk_topic_cache[(*iter)++]->topic;
 }
 
 /*
@@ -346,43 +367,118 @@ unsigned long int aclk_tbeb_delay(int reset, int base, unsigned long int min, un
     return delay;
 }
 
+static inline int aclk_parse_pair(const char *src, const char c, char **a, char **b)
+{
+    const char *ptr = strchr(src, c);
+    if (ptr == NULL)
+        return 1;
+
+//  allow empty string
+/*    if (!*(ptr+1))
+        return 1;*/
+
+    *a = callocz(1, ptr - src + 1);
+    memcpy (*a, src, ptr - src);
+
+    *b = strdupz(ptr+1);
+
+    return 0;
+}
 
 #define HTTP_PROXY_PREFIX "http://"
-void aclk_set_proxy(char **ohost, int *port, enum mqtt_wss_proxy_type *type)
+void aclk_set_proxy(char **ohost, int *port, char **uname, char **pwd, enum mqtt_wss_proxy_type *type)
 {
     ACLK_PROXY_TYPE pt;
     const char *ptr = aclk_get_proxy(&pt);
     char *tmp;
-    char *host;
+
     if (pt != PROXY_TYPE_HTTP)
         return;
 
+    *uname = NULL;
+    *pwd = NULL;
     *port = 0;
+
+    char *proxy = strdupz(ptr);
+    ptr = proxy;
 
     if (!strncmp(ptr, HTTP_PROXY_PREFIX, strlen(HTTP_PROXY_PREFIX)))
         ptr += strlen(HTTP_PROXY_PREFIX);
 
-    if ((tmp = strchr(ptr, '@')))
-        ptr = tmp;
+    if ((tmp = strchr(ptr, '@'))) {
+        *tmp = 0;
+        if(aclk_parse_pair(ptr, ':', uname, pwd)) {
+            error_report("Failed to get username and password for proxy. Will attempt connection without authentication");
+        }
+        ptr = tmp+1;
+    }
 
-    if ((tmp = strchr(ptr, '/'))) {
-        host = mallocz((tmp - ptr) + 1);
-        memcpy(host, ptr, (tmp - ptr));
-        host[tmp - ptr] = 0;
-    } else
-        host = strdupz(ptr);
+    if (!*ptr) {
+        freez(proxy);
+        freez(*uname);
+        freez(*pwd);
+        return;
+    }
 
-    if ((tmp = strchr(host, ':'))) {
+    if ((tmp = strchr(ptr, ':'))) {
         *tmp = 0;
         tmp++;
-        *port = atoi(tmp);
+        if(*tmp)
+            *port = atoi(tmp);
     }
+    *ohost = strdupz(ptr);
 
     if (*port <= 0 || *port > 65535)
         *port = 8080;
 
-    *ohost = host;
-
     if (type)
         *type = MQTT_WSS_PROXY_HTTP;
+    else {
+        freez(*uname);
+        freez(*pwd);
+    }
+
+    freez(proxy);
+}
+#endif /* ENABLE_ACLK */
+
+#if defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER < OPENSSL_VERSION_110
+static EVP_ENCODE_CTX *EVP_ENCODE_CTX_new(void)
+{
+	EVP_ENCODE_CTX *ctx = OPENSSL_malloc(sizeof(*ctx));
+
+	if (ctx != NULL) {
+		memset(ctx, 0, sizeof(*ctx));
+	}
+	return ctx;
+}
+static void EVP_ENCODE_CTX_free(EVP_ENCODE_CTX *ctx)
+{
+	OPENSSL_free(ctx);
+	return;
+}
+#endif
+
+int base64_encode_helper(unsigned char *out, int *outl, const unsigned char *in, int in_len)
+{
+    int len;
+    unsigned char *str = out;
+    EVP_ENCODE_CTX *ctx = EVP_ENCODE_CTX_new();
+    EVP_EncodeInit(ctx);
+    EVP_EncodeUpdate(ctx, str, outl, in, in_len);
+    str += *outl;
+    EVP_EncodeFinal(ctx, str, &len);
+    *outl += len;
+
+    str = out;
+    while(*str) {
+        if (*str != 0x0D && *str != 0x0A)
+            *out++ = *str++;
+        else
+            str++;
+    }
+    *out = 0;
+
+    EVP_ENCODE_CTX_free(ctx);
+    return 0;
 }

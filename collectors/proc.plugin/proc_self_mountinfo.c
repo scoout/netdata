@@ -227,8 +227,9 @@ struct mountinfo *mountinfo_read(int do_statvfs) {
     struct mountinfo *root = NULL, *last = NULL, *mi = NULL;
 
     // create a dictionary to track uniqueness
-    DICTIONARY *dict = dictionary_create(
-        DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE | DICT_OPTION_NAME_LINK_DONT_CLONE);
+    DICTIONARY *dict = dictionary_create_advanced(
+            DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE | DICT_OPTION_NAME_LINK_DONT_CLONE,
+            &dictionary_stats_category_collectors, 0);
 
     unsigned long l, lines = procfile_lines(ff);
     for(l = 0; l < lines ;l++) {
@@ -252,7 +253,7 @@ struct mountinfo *mountinfo_read(int do_statvfs) {
         for(minor = major; *minor && *minor != ':' ;minor++) ;
 
         if(unlikely(!*minor)) {
-            error("Cannot parse major:minor on '%s' at line %lu of '%s'", major, l + 1, filename);
+            collector_error("Cannot parse major:minor on '%s' at line %lu of '%s'", major, l + 1, filename);
             freez(mi);
             continue;
         }
@@ -359,6 +360,18 @@ struct mountinfo *mountinfo_read(int do_statvfs) {
             else {
                 mi->st_dev = 0;
             }
+
+            //try to detect devices with same minor and major modes. Within these,
+            //the larger mount point is considered a bind.
+            struct mountinfo *mt;
+            for(mt = root; mt; mt = mt->next) {
+                if(unlikely(mt->major == mi->major && mt->minor == mi->minor && !(mi->flags & MOUNTINFO_IS_BIND))) {
+                    if(strlen(mi->root) < strlen(mt->root))
+                        mt->flags |= MOUNTINFO_IS_BIND;
+                    else
+                        mi->flags |= MOUNTINFO_IS_BIND;
+                }
+            }
         }
         else {
             mi->filesystem = NULL;
@@ -442,7 +455,7 @@ struct mountinfo *mountinfo_read(int do_statvfs) {
 
 #ifdef NETDATA_INTERNAL_CHECKS
                     if(unlikely(!mi)) {
-                        error("Mount point '%s' not found in /proc/self/mountinfo", mnt->mnt_dir);
+                        collector_error("Mount point '%s' not found in /proc/self/mountinfo", mnt->mnt_dir);
                     }
 #endif
                 }

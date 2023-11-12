@@ -3,9 +3,8 @@
 #include "value.h"
 
 
-inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all_values_are_null, NETDATA_DOUBLE *anomaly_rate, RRDDIM *temp_rd) {
-    long c;
-    RRDDIM *d;
+inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all_values_are_null, NETDATA_DOUBLE *anomaly_rate) {
+    size_t c;
 
     NETDATA_DOUBLE *cn = &r->v[ i * r->d ];
     RRDR_VALUE_FLAGS *co = &r->o[ i * r->d ];
@@ -14,46 +13,14 @@ inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all
     NETDATA_DOUBLE sum = 0, min = 0, max = 0, v;
     int all_null = 1, init = 1;
 
-    NETDATA_DOUBLE total = 1;
     NETDATA_DOUBLE total_anomaly_rate = 0;
 
-    int set_min_max = 0;
-    if(unlikely(options & RRDR_OPTION_PERCENTAGE)) {
-        total = 0;
-        for (c = 0, d = temp_rd ? temp_rd : r->st->dimensions; d && c < r->d; c++, d = d->next) {
-            NETDATA_DOUBLE n = cn[c];
-
-            if(likely((options & RRDR_OPTION_ABSOLUTE) && n < 0))
-                n = -n;
-
-            total += n;
-        }
-        // prevent a division by zero
-        if(total == 0) total = 1;
-        set_min_max = 1;
-    }
-
     // for each dimension
-    for (c = 0, d = temp_rd ? temp_rd : r->st->dimensions; d && c < r->d; c++, d = d->next) {
-        if(unlikely(r->od[c] & RRDR_DIMENSION_HIDDEN)) continue;
-        if(unlikely((options & RRDR_OPTION_NONZERO) && !(r->od[c] & RRDR_DIMENSION_NONZERO))) continue;
+    for (c = 0; c < r->d ; c++) {
+        if(!rrdr_dimension_should_be_exposed(r->od[c], options))
+            continue;
 
         NETDATA_DOUBLE n = cn[c];
-
-        if(likely((options & RRDR_OPTION_ABSOLUTE) && n < 0))
-            n = -n;
-
-        if(unlikely(options & RRDR_OPTION_PERCENTAGE)) {
-            n = n * 100 / total;
-
-            if(unlikely(set_min_max)) {
-                r->min = r->max = n;
-                set_min_max = 0;
-            }
-
-            if(n < r->min) r->min = n;
-            if(n > r->max) r->max = n;
-        }
 
         if(unlikely(init)) {
             if(n > 0) {
@@ -80,7 +47,7 @@ inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all
 
     if(anomaly_rate) {
         if(!r->d) *anomaly_rate = 0;
-        else *anomaly_rate = total_anomaly_rate / r->d;
+        else *anomaly_rate = total_anomaly_rate / (NETDATA_DOUBLE)r->d;
     }
 
     if(unlikely(all_null)) {
@@ -99,4 +66,86 @@ inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all
         v = sum;
 
     return v;
+}
+
+QUERY_VALUE rrdmetric2value(RRDHOST *host,
+                            struct rrdcontext_acquired *rca, struct rrdinstance_acquired *ria, struct rrdmetric_acquired *rma,
+                            time_t after, time_t before,
+                            RRDR_OPTIONS options, RRDR_TIME_GROUPING time_group_method, const char *time_group_options,
+                            size_t tier, time_t timeout, QUERY_SOURCE query_source, STORAGE_PRIORITY priority
+) {
+    QUERY_TARGET_REQUEST qtr = {
+            .version = 1,
+            .host = host,
+            .rca = rca,
+            .ria = ria,
+            .rma = rma,
+            .after = after,
+            .before = before,
+            .points = 1,
+            .options = options,
+            .time_group_method = time_group_method,
+            .time_group_options = time_group_options,
+            .tier = tier,
+            .timeout_ms = timeout,
+            .query_source = query_source,
+            .priority = priority,
+    };
+
+    ONEWAYALLOC *owa = onewayalloc_create(16 * 1024);
+    QUERY_TARGET *qt = query_target_create(&qtr);
+    RRDR *r = rrd2rrdr(owa, qt);
+
+    QUERY_VALUE qv;
+
+    if(!r || rrdr_rows(r) == 0) {
+        qv = (QUERY_VALUE) {
+                .value = NAN,
+                .anomaly_rate = NAN,
+                .sp = {
+                        .count = 0,
+                        .min = NAN,
+                        .max = NAN,
+                        .sum = NAN,
+                        .anomaly_count = 0,
+                },
+                .duration_ut = (r) ? r->internal.qt->timings.executed_ut - r->internal.qt->timings.received_ut : 0,
+        };
+    }
+    else {
+        qv = (QUERY_VALUE) {
+                .after = r->view.after,
+                .before = r->view.before,
+                .points_read = r->stats.db_points_read,
+                .result_points = r->stats.result_points_generated,
+                .sp = {
+                        .count = 0,
+                },
+                .duration_ut = r->internal.qt->timings.executed_ut - r->internal.qt->timings.received_ut,
+        };
+
+        for(size_t d = 0; d < r->internal.qt->query.used ;d++) {
+            if(!rrdr_dimension_should_be_exposed(r->internal.qt->query.array[d].status, options))
+                continue;
+
+            storage_point_merge_to(qv.sp, r->internal.qt->query.array[d].query_points);
+        }
+
+        for(size_t t = 0; t < storage_tiers ;t++)
+            qv.storage_points_per_tier[t] = r->internal.qt->db.tiers[t].points;
+
+        long i = (!(options & RRDR_OPTION_REVERSED))?(long)rrdr_rows(r) - 1:0;
+        int all_values_are_null = 0;
+        qv.value = rrdr2value(r, i, options, &all_values_are_null, &qv.anomaly_rate);
+        if(all_values_are_null) {
+            qv.value = NAN;
+            qv.anomaly_rate = NAN;
+        }
+    }
+
+    rrdr_free(owa, r);
+    query_target_release(qt);
+    onewayalloc_destroy(owa);
+
+    return qv;
 }

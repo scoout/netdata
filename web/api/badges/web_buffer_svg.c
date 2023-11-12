@@ -767,7 +767,7 @@ void buffer_svg(BUFFER *wb, const char *label,
     label_color_parsed = parse_color_argument(label_color, "555");
     value_color_parsed = parse_color_argument(value_color_buffer, "555");
 
-    wb->contenttype = CT_IMAGE_SVG_XML;
+    wb->content_type = CT_IMAGE_SVG_XML;
 
     total_width  = total_width * scale / 100.0;
     height       = height      * scale / 100.0;
@@ -898,14 +898,14 @@ int web_client_api_request_v1_badge(RRDHOST *host, struct web_client *w, char *u
     RRDSET *st = NULL;
 
     while(url) {
-        char *value = mystrsep(&url, "&");
+        char *value = strsep_skip_consecutive_separators(&url, "&");
         if(!value || !*value) continue;
 
-        char *name = mystrsep(&value, "=");
+        char *name = strsep_skip_consecutive_separators(&value, "=");
         if(!name || !*name) continue;
         if(!value || !*value) continue;
 
-        debug(D_WEB_CLIENT, "%llu: API v1 badge.svg query param '%s' with value '%s'", w->id, name, value);
+        netdata_log_debug(D_WEB_CLIENT, "%llu: API v1 badge.svg query param '%s' with value '%s'", w->id, name, value);
 
         // name and value are now the parameters
         // they are not null and not empty
@@ -913,7 +913,7 @@ int web_client_api_request_v1_badge(RRDHOST *host, struct web_client *w, char *u
         if(!strcmp(name, "chart")) chart = value;
         else if(!strcmp(name, "dimension") || !strcmp(name, "dim") || !strcmp(name, "dimensions") || !strcmp(name, "dims")) {
             if(!dimensions)
-                dimensions = buffer_create(100);
+                dimensions = buffer_create(100, &netdata_buffers_statistics.buffers_api);
 
             buffer_strcat(dimensions, "|");
             buffer_strcat(dimensions, value);
@@ -923,7 +923,7 @@ int web_client_api_request_v1_badge(RRDHOST *host, struct web_client *w, char *u
         else if(!strcmp(name, "points")) points_str = value;
         else if(!strcmp(name, "group_options")) group_options = value;
         else if(!strcmp(name, "group")) {
-            group = web_client_api_request_v1_data_group(value, RRDR_GROUPING_AVERAGE);
+            group = time_grouping_parse(value, RRDR_GROUPING_AVERAGE);
         }
         else if(!strcmp(name, "options")) {
             options |= web_client_api_request_v1_data_options(value);
@@ -969,7 +969,7 @@ int web_client_api_request_v1_badge(RRDHOST *host, struct web_client *w, char *u
         ret = HTTP_RESP_OK;
         goto cleanup;
     }
-    st->last_accessed_time = now_realtime_sec();
+    st->last_accessed_time_s = now_realtime_sec();
 
     if(alarm) {
         rca = rrdcalc_from_rrdset_get(st, alarm);
@@ -1040,7 +1040,7 @@ int web_client_api_request_v1_badge(RRDHOST *host, struct web_client *w, char *u
             units = rrdset_units(st);
     }
 
-    debug(D_WEB_CLIENT, "%llu: API command 'badge.svg' for chart '%s', alarm '%s', dimensions '%s', after '%lld', before '%lld', points '%d', group '%d', options '0x%08x'"
+    netdata_log_debug(D_WEB_CLIENT, "%llu: API command 'badge.svg' for chart '%s', alarm '%s', dimensions '%s', after '%lld', before '%lld', points '%d', group '%d', options '0x%08x'"
           , w->id
           , chart
           , alarm?alarm:""
@@ -1055,9 +1055,12 @@ int web_client_api_request_v1_badge(RRDHOST *host, struct web_client *w, char *u
     if(rc) {
         if (refresh > 0) {
             buffer_sprintf(w->response.header, "Refresh: %d\r\n", refresh);
-            w->response.data->expires = now_realtime_sec() + refresh;
+            w->response.data->date = now_realtime_sec();
+            w->response.data->expires = w->response.data->date + refresh;
+            buffer_cacheable(w->response.data);
         }
-        else buffer_no_cacheable(w->response.data);
+        else
+            buffer_no_cacheable(w->response.data);
 
         if(!value_color) {
             switch(rc->status) {
@@ -1110,13 +1113,14 @@ int web_client_api_request_v1_badge(RRDHOST *host, struct web_client *w, char *u
         ret = HTTP_RESP_INTERNAL_SERVER_ERROR;
 
         // if the collected value is too old, don't calculate its value
-        if (rrdset_last_entry_t(st) >= (now_realtime_sec() - (st->update_every * st->gap_when_lost_iterations_above)))
+        if (rrdset_last_entry_s(st) >= (now_realtime_sec() - (st->update_every * gap_when_lost_iterations_above)))
             ret = rrdset2value_api_v1(st, w->response.data, &n,
                                       (dimensions) ? buffer_tostring(dimensions) : NULL,
                                       points, after, before, group, group_options, 0, options,
                                       NULL, &latest_timestamp,
                                       NULL, NULL, NULL,
-                                      &value_is_null, NULL, 0, 0);
+                                      &value_is_null, NULL, 0, 0,
+                                      QUERY_SOURCE_API_BADGE, STORAGE_PRIORITY_NORMAL);
 
         // if the value cannot be calculated, show empty badge
         if (ret != HTTP_RESP_OK) {

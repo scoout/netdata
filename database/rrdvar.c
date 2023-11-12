@@ -84,7 +84,17 @@ static void rrdvar_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 }
 
 DICTIONARY *rrdvariables_create(void) {
-    DICTIONARY *dict = dictionary_create(DICT_OPTION_DONT_OVERWRITE_VALUE);
+    DICTIONARY *dict = dictionary_create_advanced(DICT_OPTION_DONT_OVERWRITE_VALUE | DICT_OPTION_FIXED_SIZE,
+                                                  &dictionary_stats_category_rrdhealth, sizeof(RRDVAR));
+
+    dictionary_register_insert_callback(dict, rrdvar_insert_callback, NULL);
+    dictionary_register_delete_callback(dict, rrdvar_delete_callback, NULL);
+
+    return dict;
+}
+
+DICTIONARY *health_rrdvariables_create(void) {
+    DICTIONARY *dict = dictionary_create_advanced(DICT_OPTION_NONE, &dictionary_stats_category_rrdhealth, 0);
 
     dictionary_register_insert_callback(dict, rrdvar_insert_callback, NULL);
     dictionary_register_delete_callback(dict, rrdvar_delete_callback, NULL);
@@ -123,6 +133,19 @@ inline const RRDVAR_ACQUIRED *rrdvar_add_and_acquire(const char *scope __maybe_u
     return (const RRDVAR_ACQUIRED *)dictionary_set_and_acquire_item_advanced(dict, string2str(name), (ssize_t)string_strlen(name) + 1, NULL, sizeof(RRDVAR), &tmp);
 }
 
+inline void rrdvar_add(const char *scope __maybe_unused, DICTIONARY *dict, STRING *name, RRDVAR_TYPE type, RRDVAR_FLAGS options, void *value) {
+    if(unlikely(!dict || !name)) return;
+
+    struct rrdvar_constructor tmp = {
+        .name = name,
+        .value = value,
+        .type = type,
+        .options = options,
+        .react_action = RRDVAR_REACT_NONE,
+    };
+    dictionary_set_advanced(dict, string2str(name), (ssize_t)string_strlen(name) + 1, NULL, sizeof(RRDVAR), &tmp);
+}
+
 void rrdvar_delete_all(DICTIONARY *dict) {
     dictionary_flush(dict);
 }
@@ -152,7 +175,7 @@ void rrdvar_custom_host_variable_set(RRDHOST *host, const RRDVAR_ACQUIRED *rva, 
     if(unlikely(!host->rrdvars || !rva)) return; // when health is not enabled
 
     if(rrdvar_type(rva) != RRDVAR_TYPE_CALCULATED || !(rrdvar_flags(rva) & (RRDVAR_FLAG_CUSTOM_HOST_VAR | RRDVAR_FLAG_ALLOCATED)))
-        error("requested to set variable '%s' to value " NETDATA_DOUBLE_FORMAT " but the variable is not a custom one.", rrdvar_name(rva), value);
+        netdata_log_error("requested to set variable '%s' to value " NETDATA_DOUBLE_FORMAT " but the variable is not a custom one.", rrdvar_name(rva), value);
     else {
         RRDVAR *rv = dictionary_acquired_item_value((const DICTIONARY_ITEM *)rva);
         NETDATA_DOUBLE *v = rv->value;
@@ -205,9 +228,55 @@ NETDATA_DOUBLE rrdvar2number(const RRDVAR_ACQUIRED *rva) {
         }
 
         default:
-            error("I don't know how to convert RRDVAR type %u to NETDATA_DOUBLE", rv->type);
+            netdata_log_error("I don't know how to convert RRDVAR type %u to NETDATA_DOUBLE", rv->type);
             return NAN;
     }
+}
+
+int health_variable_check(DICTIONARY *dict, RRDSET *st, RRDDIM *rd) {
+    if (!dict || !st || !rd) return 0;
+
+    STRING *helper_str;
+    char helper[RRDVAR_MAX_LENGTH + 1];
+    snprintfz(helper, RRDVAR_MAX_LENGTH, "%s.%s", string2str(st->name), string2str(rd->name));
+    helper_str = string_strdupz(helper);
+
+    const RRDVAR_ACQUIRED *rva;
+    rva = rrdvar_get_and_acquire(dict, helper_str);
+    if(rva) {
+        dictionary_acquired_item_release(dict, (const DICTIONARY_ITEM *)rva);
+        string_freez(helper_str);
+        return 1;
+    }
+
+    string_freez(helper_str);
+
+    return 0;
+}
+
+void rrdvar_store_for_chart(RRDHOST *host, RRDSET *st) {
+    if (!st) return;
+
+    if(!st->rrdfamily)
+        st->rrdfamily = rrdfamily_add_and_acquire(host, rrdset_family(st));
+
+    if(!st->rrdvars)
+        st->rrdvars = rrdvariables_create();
+
+    rrddimvar_index_init(st);
+
+    rrdsetvar_add_and_leave_released(st, "last_collected_t", RRDVAR_TYPE_TIME_T, &st->last_collected_time.tv_sec, RRDVAR_FLAG_NONE);
+    rrdsetvar_add_and_leave_released(st, "green", RRDVAR_TYPE_CALCULATED, &st->green, RRDVAR_FLAG_NONE);
+    rrdsetvar_add_and_leave_released(st, "red", RRDVAR_TYPE_CALCULATED, &st->red, RRDVAR_FLAG_NONE);
+    rrdsetvar_add_and_leave_released(st, "update_every", RRDVAR_TYPE_INT, &st->update_every, RRDVAR_FLAG_NONE);
+
+    RRDDIM *rd;
+    rrddim_foreach_read(rd, st) {
+        rrddimvar_add_and_leave_released(rd, RRDVAR_TYPE_CALCULATED, NULL, NULL, &rd->collector.last_stored_value, RRDVAR_FLAG_NONE);
+        rrddimvar_add_and_leave_released(rd, RRDVAR_TYPE_COLLECTED, NULL, "_raw", &rd->collector.last_collected_value, RRDVAR_FLAG_NONE);
+        rrddimvar_add_and_leave_released(rd, RRDVAR_TYPE_TIME_T, NULL, "_last_collected_t", &rd->collector.last_collected_time.tv_sec, RRDVAR_FLAG_NONE);
+    }
+    rrddim_foreach_done(rd);
 }
 
 int health_variable_lookup(STRING *variable, RRDCALC *rc, NETDATA_DOUBLE *result) {
@@ -246,7 +315,6 @@ int health_variable_lookup(STRING *variable, RRDCALC *rc, NETDATA_DOUBLE *result
 
 struct variable2json_helper {
     BUFFER *buf;
-    size_t counter;
     RRDVAR_FLAGS options;
 };
 
@@ -257,47 +325,54 @@ static int single_variable2json_callback(const DICTIONARY_ITEM *item __maybe_unu
 
     if (helper->options == RRDVAR_FLAG_NONE || rrdvar_flags(rva) & helper->options) {
         if(unlikely(isnan(value) || isinf(value)))
-            buffer_sprintf(helper->buf, "%s\n\t\t\"%s\": null", helper->counter?",":"", rrdvar_name(rva));
+            buffer_json_member_add_string(helper->buf, rrdvar_name(rva), NULL);
         else
-            buffer_sprintf(helper->buf, "%s\n\t\t\"%s\": %0.5" NETDATA_DOUBLE_MODIFIER, helper->counter?",":"", rrdvar_name(rva), (NETDATA_DOUBLE)value);
-
-        helper->counter++;
+            buffer_json_member_add_double(helper->buf, rrdvar_name(rva), (NETDATA_DOUBLE)value);
     }
 
     return 0;
 }
 
 void health_api_v1_chart_custom_variables2json(RRDSET *st, BUFFER *buf) {
-    struct variable2json_helper helper = {
-            .buf = buf,
-            .counter = 0,
-            .options = RRDVAR_FLAG_CUSTOM_CHART_VAR};
+    struct variable2json_helper helper = {.buf = buf, .options = RRDVAR_FLAG_CUSTOM_CHART_VAR};
 
-    buffer_sprintf(buf, "{");
     rrdvar_walkthrough_read(st->rrdvars, single_variable2json_callback, &helper);
-    buffer_strcat(buf, "\n\t\t\t}");
 }
 
 void health_api_v1_chart_variables2json(RRDSET *st, BUFFER *buf) {
     RRDHOST *host = st->rrdhost;
 
-    struct variable2json_helper helper = {
-            .buf = buf,
-            .counter = 0,
-            .options = RRDVAR_FLAG_NONE};
+    struct variable2json_helper helper = {.buf = buf, .options = RRDVAR_FLAG_NONE};
 
-    buffer_sprintf(buf, "{\n\t\"chart\": \"%s\",\n\t\"chart_name\": \"%s\",\n\t\"chart_context\": \"%s\",\n\t\"chart_variables\": {", rrdset_id(st), rrdset_name(st), rrdset_context(st));
-    rrdvar_walkthrough_read(st->rrdvars, single_variable2json_callback, &helper);
+    buffer_json_initialize(buf, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
 
-    buffer_sprintf(buf, "\n\t},\n\t\"family\": \"%s\",\n\t\"family_variables\": {", rrdset_family(st));
-    helper.counter = 0;
-    rrdvar_walkthrough_read(rrdfamily_rrdvars_dict(st->rrdfamily), single_variable2json_callback, &helper);
+    buffer_json_member_add_string(buf, "chart", rrdset_id(st));
+    buffer_json_member_add_string(buf, "chart_name", rrdset_name(st));
+    buffer_json_member_add_string(buf, "chart_context", rrdset_context(st));
 
-    buffer_sprintf(buf, "\n\t},\n\t\"host\": \"%s\",\n\t\"host_variables\": {", rrdhost_hostname(host));
-    helper.counter = 0;
-    rrdvar_walkthrough_read(host->rrdvars, single_variable2json_callback, &helper);
+    {
+        buffer_json_member_add_object(buf, "chart_variables");
+        rrdvar_walkthrough_read(st->rrdvars, single_variable2json_callback, &helper);
+        buffer_json_object_close(buf);
+    }
 
-    buffer_strcat(buf, "\n\t}\n}\n");
+    buffer_json_member_add_string(buf, "family", rrdset_family(st));
+
+    {
+        buffer_json_member_add_object(buf, "family_variables");
+        rrdvar_walkthrough_read(rrdfamily_rrdvars_dict(st->rrdfamily), single_variable2json_callback, &helper);
+        buffer_json_object_close(buf);
+    }
+
+    buffer_json_member_add_string(buf, "host", rrdhost_hostname(host));
+
+    {
+        buffer_json_member_add_object(buf, "host_variables");
+        rrdvar_walkthrough_read(host->rrdvars, single_variable2json_callback, &helper);
+        buffer_json_object_close(buf);
+    }
+
+    buffer_json_finalize(buf);
 }
 
 // ----------------------------------------------------------------------------

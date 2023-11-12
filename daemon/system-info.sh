@@ -96,6 +96,11 @@ if [ "${CONTAINER}" = "unknown" ]; then
     CONT_DETECTION="dockerenv"
   fi
 
+  if [ -n "${KUBERNETES_SERVICE_HOST}" ]; then
+    CONTAINER="container"
+    CONT_DETECTION="kubernetes"
+  fi
+
 fi
 
 # -------------------------------------------------------------------------------------------------
@@ -217,6 +222,9 @@ if [ -n "${lscpu}" ] && lscpu > /dev/null 2>&1; then
   LCPU_COUNT="$(echo "${lscpu_output}" | grep "^CPU(s):" | cut -f 2 -d ':' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   CPU_VENDOR="$(echo "${lscpu_output}" | grep "^Vendor ID:" | cut -f 2 -d ':' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   CPU_MODEL="$(echo "${lscpu_output}" | grep "^Model name:" | cut -f 2 -d ':' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if grep -q "^lxcfs /proc" /proc/self/mounts 2>/dev/null && count=$(grep -c ^processor /proc/cpuinfo 2>/dev/null); then
+    LCPU_COUNT="$count"
+  fi
   possible_cpu_freq="$(echo "${lscpu_output}" | grep -F "CPU max MHz:" | cut -f 2 -d ':' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -o '^[0-9]*')"
   if [ -z "$possible_cpu_freq" ]; then
     possible_cpu_freq="$(echo "${lscpu_output}" | grep -F "CPU MHz:" | cut -f 2 -d ':' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -o '^[0-9]*')"
@@ -305,7 +313,7 @@ elif [ -r /proc/cpuinfo ]; then
   if (echo "${CPU_INFO_SOURCE}" | grep -qv procfs); then
     CPU_INFO_SOURCE="${CPU_INFO_SOURCE} procfs"
   fi
-  value=$(grep "cpu MHz" /proc/cpuinfo 2>/dev/null | grep -o "[0-9]*" | head -n 1 | awk '{print int($0*1000000)}')
+  value=$(grep "cpu MHz" /proc/cpuinfo 2>/dev/null | grep -o "[0-9]*" | head -n 1 | awk '{printf "%0.f",int($0*1000000)}')
   [ -n "$value" ] && CPU_FREQ="$value"
 fi
 
@@ -388,7 +396,7 @@ else
     # These translate to the prefixs of files in `/dev` indicating the device type.
     # They are sorted by lowest used device major number, with dynamically assigned ones at the end.
     # We use this to look up device major numbers in `/proc/devices`
-    device_names='hd sd mfm ad ftl pd nftl dasd intfl mmcblk ub xvd rfd vbd nvme virtblk blkext'
+    device_names='hd sd mfm ad ftl pd nftl dasd intfl mmcblk mmc ub xvd rfd vbd nvme virtblk blkext'
 
     for name in ${device_names}; do
       if grep -qE " ${name}\$" /proc/devices; then
@@ -437,7 +445,7 @@ CLOUD_INSTANCE_TYPE="unknown"
 CLOUD_INSTANCE_REGION="unknown"
 
 if [ "${VIRTUALIZATION}" != "none" ] && command -v curl > /dev/null 2>&1; then
-  # Returned HTTP status codes: GCP is 200, AWS is 200, DO is 404. 
+  # Returned HTTP status codes: GCP is 200, AWS is 200, DO is 404.
   curl --fail -s -m 1 --noproxy "*" http://169.254.169.254 >/dev/null 2>&1
   ret=$?
   # anything but operation timeout.
@@ -454,7 +462,7 @@ if [ "${VIRTUALIZATION}" != "none" ] && command -v curl > /dev/null 2>&1; then
 
     # Try GCE computeMetadata v1
     if [ "${CLOUD_TYPE}" = "unknown" ]; then
-      if [ -n "$(curl --fail -s --connect-timeout 1 -m 3 --noproxy "*" -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1")" ]; then
+      if curl --fail -s --connect-timeout 1 -m 3 --noproxy "*" -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1" | grep -sq computeMetadata; then
         CLOUD_TYPE="GCP"
         CLOUD_INSTANCE_TYPE="$(curl --fail -s --connect-timeout 1 -m 3 --noproxy "*" -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/machine-type")"
         [ -n "$CLOUD_INSTANCE_TYPE" ] && CLOUD_INSTANCE_TYPE=$(basename "$CLOUD_INSTANCE_TYPE")
@@ -463,16 +471,15 @@ if [ "${VIRTUALIZATION}" != "none" ] && command -v curl > /dev/null 2>&1; then
       fi
     fi
 
-    # TODO: needs to be tested in Microsoft Azure
     # Try Azure IMDS
-    # if [ "${CLOUD_TYPE}" = "unknown" ]; then
-    #   AZURE_IMDS_DATA="$(curl --fail -s -m 5 -H "Metadata: true" --noproxy "*" "http://169.254.169.254/metadata/instance?version=2021-10-01")"
-    #   if [ -n "${AZURE_IMDS_DATA}" ]; then
-    #     CLOUD_TYPE="Azure"
-    #     CLOUD_INSTANCE_TYPE="$(curl --fail -s -m 5 -H "Metadata: true" --noproxy "*" "http://169.254.169.254/metadata/instance/compute/vmSize?version=2021-10-01&format=text")"
-    #     CLOUD_INSTANCE_REGION="$(curl --fail -s -m 5 -H "Metadata: true" --noproxy "*" "http://169.254.169.254/metadata/instance/compute/location?version=2021-10-01&format=text")"
-    #   fi
-    # fi
+    if [ "${CLOUD_TYPE}" = "unknown" ]; then
+      AZURE_IMDS_DATA="$(curl --fail -s --connect-timeout 1 -m 3 -H "Metadata: true" --noproxy "*" "http://169.254.169.254/metadata/instance?api-version=2021-10-01")"
+      if [ -n "${AZURE_IMDS_DATA}" ] && echo "${AZURE_IMDS_DATA}" | grep -sq azEnvironment; then
+        CLOUD_TYPE="Azure"
+        CLOUD_INSTANCE_TYPE="$(curl --fail -s --connect-timeout 1 -m 3 -H "Metadata: true" --noproxy "*" "http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-10-01&format=text")"
+        CLOUD_INSTANCE_REGION="$(curl --fail -s --connect-timeout 1 -m 3 -H "Metadata: true" --noproxy "*" "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-10-01&format=text")"
+      fi
+    fi
   fi
 fi
 

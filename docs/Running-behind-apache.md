@@ -1,9 +1,4 @@
-<!--
-title: "Netdata via apache's mod_proxy"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/docs/Running-behind-apache.md
--->
-
-# Netdata via apache's mod_proxy
+# Netdata via Apache's mod_proxy
 
 Below you can find instructions for configuring an apache server to:
 
@@ -34,14 +29,11 @@ Also, enable the rewrite module:
 ```sh
 sudo a2enmod rewrite
 ```
-
----
-
 ## Netdata on an existing virtual host
 
 On any **existing** and already **working** apache virtual host, you can redirect requests for URL `/netdata/` to one or more Netdata servers.
 
-### proxy one Netdata, running on the same server apache runs
+### Proxy one Netdata, running on the same server apache runs
 
 Add the following on top of any existing virtual host. It will allow you to access Netdata as `http://virtual.host/netdata/`.
 
@@ -71,7 +63,7 @@ Add the following on top of any existing virtual host. It will allow you to acce
 </VirtualHost>
 ```
 
-### proxy multiple Netdata running on multiple servers
+### Proxy multiple Netdata running on multiple servers
 
 Add the following on top of any existing virtual host. It will allow you to access multiple Netdata as `http://virtual.host/netdata/HOSTNAME/`, where `HOSTNAME` is the hostname of any other Netdata server you have (to access the `localhost` Netdata, use `http://virtual.host/netdata/localhost/`).
 
@@ -314,7 +306,7 @@ or
     bind to = ::1
 ```
 
----
+
 
 You can also use a unix domain socket. This will also provide a faster route between apache and Netdata:
 
@@ -338,7 +330,7 @@ At the apache side, prepend the 2nd argument to `ProxyPass` with `unix:/tmp/netd
 ProxyPass "/netdata/" "unix:/tmp/netdata.sock|http://localhost:19999/" connectiontimeout=5 timeout=30 keepalive=on
 ```
 
----
+
 
 If your apache server is not on localhost, you can set:
 
@@ -350,9 +342,9 @@ If your apache server is not on localhost, you can set:
 
 *note: Netdata v1.9+ support `allow connections from`*
 
-`allow connections from` accepts [Netdata simple patterns](/libnetdata/simple_pattern/README.md) to match against the connection IP address.
+`allow connections from` accepts [Netdata simple patterns](https://github.com/netdata/netdata/blob/master/libnetdata/simple_pattern/README.md) to match against the connection IP address.
 
-## prevent the double access.log
+## Prevent the double access.log
 
 apache logs accesses and Netdata logs them too. You can prevent Netdata from generating its access log, by setting this in `/etc/netdata/netdata.conf`:
 

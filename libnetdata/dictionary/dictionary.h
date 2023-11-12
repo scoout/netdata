@@ -35,6 +35,10 @@
  *
  */
 
+#ifdef NETDATA_INTERNAL_CHECKS
+#define DICT_WITH_STATS 1
+#endif
+
 #ifdef DICTIONARY_INTERNALS
 #define DICTFE_CONST
 #define DICT_ITEM_CONST
@@ -46,13 +50,14 @@
 typedef struct dictionary DICTIONARY;
 typedef struct dictionary_item DICTIONARY_ITEM;
 
-typedef enum dictionary_options {
+typedef enum __attribute__((packed)) dictionary_options {
     DICT_OPTION_NONE                    = 0,        // the default is the opposite of all below
     DICT_OPTION_SINGLE_THREADED         = (1 << 0), // don't use any locks (default: use locks)
     DICT_OPTION_VALUE_LINK_DONT_CLONE   = (1 << 1), // don't copy the value, just point to the one provided (default: copy)
     DICT_OPTION_NAME_LINK_DONT_CLONE    = (1 << 2), // don't copy the name, just point to the one provided (default: copy)
     DICT_OPTION_DONT_OVERWRITE_VALUE    = (1 << 3), // don't overwrite values of dictionary items (default: overwrite)
     DICT_OPTION_ADD_IN_FRONT            = (1 << 4), // add dictionary items at the front of the linked list (default: at the end)
+    DICT_OPTION_FIXED_SIZE              = (1 << 5), // the items of the dictionary have a fixed size
 } DICT_OPTIONS;
 
 struct dictionary_stats {
@@ -91,68 +96,73 @@ struct dictionary_stats {
 
     // memory
     struct {
-        long indexed;               // bytes of keys indexed (indication of the index size)
+        long index;                 // bytes of keys indexed (indication of the index size)
         long values;                // bytes of caller structures
         long dict;                  // bytes of the structures dictionary needs
     } memory;
 
     // spin locks
     struct {
-        size_t use;                 // number of times a reference to item had to spin to acquire it or ignore it
-        size_t search;              // number of times a successful search result had to be thrown away
-        size_t insert;              // number of times an insertion to the hash table had to be repeated
+        size_t use_spins;           // number of times a reference to item had to spin to acquire it or ignore it
+        size_t search_spins;        // number of times a successful search result had to be thrown away
+        size_t insert_spins;        // number of times an insertion to the hash table had to be repeated
+        size_t delete_spins;        // number of times a deletion had to spin to get a decision
     } spin_locks;
 };
 
 // Create a dictionary
 #ifdef NETDATA_INTERNAL_CHECKS
-#define dictionary_create(options) dictionary_create_advanced_with_trace(options, NULL, __FUNCTION__, __LINE__, __FILE__)
-#define dictionary_create_advanced(options, stats) dictionary_create_advanced_with_trace(options, stats, __FUNCTION__, __LINE__, __FILE__)
-extern DICTIONARY *dictionary_create_advanced_with_trace(DICT_OPTIONS options, struct dictionary_stats *stats, const char *function, size_t line, const char *file);
+#define dictionary_create(options) dictionary_create_advanced_with_trace(options, NULL, 0, __FUNCTION__, __LINE__, __FILE__)
+#define dictionary_create_advanced(options, stats, fixed_size) dictionary_create_advanced_with_trace(options, stats, fixed_size, __FUNCTION__, __LINE__, __FILE__)
+DICTIONARY *dictionary_create_advanced_with_trace(DICT_OPTIONS options, struct dictionary_stats *stats, size_t fixed_size, const char *function, size_t line, const char *file);
 #else
-#define dictionary_create(options) dictionary_create_advanced(options, NULL);
-extern DICTIONARY *dictionary_create_advanced(DICT_OPTIONS options, struct dictionary_stats *stats);
+#define dictionary_create(options) dictionary_create_advanced(options, NULL, 0)
+DICTIONARY *dictionary_create_advanced(DICT_OPTIONS options, struct dictionary_stats *stats, size_t fixed_size);
 #endif
 
 // Create a view on a dictionary
 #ifdef NETDATA_INTERNAL_CHECKS
 #define dictionary_create_view(master) dictionary_create_view_with_trace(master, __FUNCTION__, __LINE__, __FILE__)
-extern DICTIONARY *dictionary_create_view_with_trace(DICTIONARY *master, const char *function, size_t line, const char *file);
+DICTIONARY *dictionary_create_view_with_trace(DICTIONARY *master, const char *function, size_t line, const char *file);
 #else
-extern DICTIONARY *dictionary_create_view(DICTIONARY *master);
+DICTIONARY *dictionary_create_view(DICTIONARY *master);
 #endif
 
 // an insert callback to be called just after an item is added to the dictionary
 // this callback is called while the dictionary is write locked!
-extern void dictionary_register_insert_callback(DICTIONARY *dict, void (*ins_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
+void dictionary_register_insert_callback(DICTIONARY *dict, void (*ins_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
 
 // a delete callback to be called just before an item is deleted forever
 // this callback is called while the dictionary is write locked!
-extern void dictionary_register_delete_callback(DICTIONARY *dict, void (*del_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
+void dictionary_register_delete_callback(DICTIONARY *dict, void (*del_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
 
 // a merge callback to be called when DICT_OPTION_DONT_OVERWRITE_VALUE
 // and an item is already found in the dictionary - the dictionary does nothing else in this case
 // the old_value will remain in the dictionary - the new_value is ignored
 // The callback should return true if the value has been updated (it increases the dictionary version).
-extern void dictionary_register_conflict_callback(DICTIONARY *dict, bool (*conflict_callback)(const DICTIONARY_ITEM *item, void *old_value, void *new_value, void *data), void *data);
+void dictionary_register_conflict_callback(DICTIONARY *dict, bool (*conflict_callback)(const DICTIONARY_ITEM *item, void *old_value, void *new_value, void *data), void *data);
 
 // a reaction callback to be called after every item insertion or conflict
 // after the constructors have finished and the items are fully available for use
 // and the dictionary is not write locked anymore
-extern void dictionary_register_react_callback(DICTIONARY *dict, void (*react_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
+void dictionary_register_react_callback(DICTIONARY *dict, void (*react_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
 
 // Destroy a dictionary
 // Returns the number of bytes freed
 // The returned value will not include name/key sizes
 // Registered delete callbacks will be run for each item in the dictionary.
-extern size_t dictionary_destroy(DICTIONARY *dict);
+size_t dictionary_destroy(DICTIONARY *dict);
 
 // Empties a dictionary
 // Referenced items will survive, but are not offered anymore.
 // Registered delete callbacks will be run for each item in the dictionary.
-extern void dictionary_flush(DICTIONARY *dict);
+void dictionary_flush(DICTIONARY *dict);
 
-extern void dictionary_version_increment(DICTIONARY *dict);
+void dictionary_version_increment(DICTIONARY *dict);
+
+void dictionary_garbage_collect(DICTIONARY *dict);
+
+void cleanup_destroyed_dictionaries(void);
 
 // ----------------------------------------------------------------------------
 // Set an item in the dictionary
@@ -171,26 +181,26 @@ extern void dictionary_version_increment(DICTIONARY *dict);
 // Passing NULL as value, the dictionary will callocz() the newly allocated value, otherwise it will copy it.
 // Passing 0 as value_len, the dictionary will set the value to NULL (no allocations for value will be made).
 #define dictionary_set(dict, name, value, value_len) dictionary_set_advanced(dict, name, -1, value, value_len, NULL)
-extern void *dictionary_set_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, void *value, size_t value_len, void *constructor_data);
+void *dictionary_set_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, void *value, size_t value_len, void *constructor_data);
 
 #define dictionary_set_and_acquire_item(dict, name, value, value_len) dictionary_set_and_acquire_item_advanced(dict, name, -1, value, value_len, NULL)
-extern DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_set_and_acquire_item_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, void *value, size_t value_len, void *constructor_data);
+DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_set_and_acquire_item_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, void *value, size_t value_len, void *constructor_data);
 
 // set an item in a dictionary view
 #define dictionary_view_set_and_acquire_item(dict, name, master_item) dictionary_view_set_and_acquire_item_advanced(dict, name, -1, master_item)
-extern DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_view_set_and_acquire_item_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, DICTIONARY_ITEM *master_item);
+DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_view_set_and_acquire_item_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, DICTIONARY_ITEM *master_item);
 #define dictionary_view_set(dict, name, master_item) dictionary_view_set_advanced(dict, name, -1, master_item)
-extern void *dictionary_view_set_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, DICTIONARY_ITEM *master_item);
+void *dictionary_view_set_advanced(DICTIONARY *dict, const char *name, ssize_t name_len, DICT_ITEM_CONST DICTIONARY_ITEM *master_item);
 
 // ----------------------------------------------------------------------------
 // Get an item from the dictionary
 // If it returns NULL, the item is not found
 
 #define dictionary_get(dict, name) dictionary_get_advanced(dict, name, -1)
-extern void *dictionary_get_advanced(DICTIONARY *dict, const char *name, ssize_t name_len);
+void *dictionary_get_advanced(DICTIONARY *dict, const char *name, ssize_t name_len);
 
 #define dictionary_get_and_acquire_item(dict, name) dictionary_get_and_acquire_item_advanced(dict, name, -1)
-extern DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_get_and_acquire_item_advanced(DICTIONARY *dict, const char *name, ssize_t name_len);
+DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_get_and_acquire_item_advanced(DICTIONARY *dict, const char *name, ssize_t name_len);
 
 
 // ----------------------------------------------------------------------------
@@ -199,18 +209,19 @@ extern DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_get_and_acquire_item_advanced
 // returns false if the item was not found in the index
 
 #define dictionary_del(dict, name) dictionary_del_advanced(dict, name, -1)
-extern bool dictionary_del_advanced(DICTIONARY *dict, const char *name, ssize_t name_len);
+bool dictionary_del_advanced(DICTIONARY *dict, const char *name, ssize_t name_len);
 
 // ----------------------------------------------------------------------------
 // reference counters management
 
-extern void dictionary_acquired_item_release(DICTIONARY *dict, DICT_ITEM_CONST DICTIONARY_ITEM *item);
+void dictionary_acquired_item_release(DICTIONARY *dict, DICT_ITEM_CONST DICTIONARY_ITEM *item);
 
-extern DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_acquired_item_dup(DICTIONARY *dict, DICT_ITEM_CONST DICTIONARY_ITEM *item);
+DICT_ITEM_CONST DICTIONARY_ITEM *dictionary_acquired_item_dup(DICTIONARY *dict, DICT_ITEM_CONST DICTIONARY_ITEM *item);
 
-extern const char *dictionary_acquired_item_name(DICT_ITEM_CONST DICTIONARY_ITEM *item);
-extern void *dictionary_acquired_item_value(DICT_ITEM_CONST DICTIONARY_ITEM *item);
+const char *dictionary_acquired_item_name(DICT_ITEM_CONST DICTIONARY_ITEM *item);
+void *dictionary_acquired_item_value(DICT_ITEM_CONST DICTIONARY_ITEM *item);
 
+size_t dictionary_acquired_item_references(DICT_ITEM_CONST DICTIONARY_ITEM *item);
 
 // ----------------------------------------------------------------------------
 // Traverse (walk through) the items of the dictionary.
@@ -227,11 +238,13 @@ extern void *dictionary_acquired_item_value(DICT_ITEM_CONST DICTIONARY_ITEM *ite
 //
 #define dictionary_walkthrough_read(dict, callback, data) dictionary_walkthrough_rw(dict, 'r', callback, data)
 #define dictionary_walkthrough_write(dict, callback, data) dictionary_walkthrough_rw(dict, 'w', callback, data)
-extern int dictionary_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
+int dictionary_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data);
 
-#define dictionary_sorted_walkthrough_read(dict, callback, data) dictionary_sorted_walkthrough_rw(dict, 'r', callback, data)
-#define dictionary_sorted_walkthrough_write(dict, callback, data) dictionary_sorted_walkthrough_rw(dict, 'w', callback, data)
-int dictionary_sorted_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(const DICTIONARY_ITEM *item, void *entry, void *data), void *data);
+typedef int (*dictionary_sorted_compar)(const DICTIONARY_ITEM **item1, const DICTIONARY_ITEM **item2);
+
+#define dictionary_sorted_walkthrough_read(dict, callback, data) dictionary_sorted_walkthrough_rw(dict, 'r', callback, data, NULL)
+#define dictionary_sorted_walkthrough_write(dict, callback, data) dictionary_sorted_walkthrough_rw(dict, 'w', callback, data, NULL)
+int dictionary_sorted_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(const DICTIONARY_ITEM *item, void *entry, void *data), void *data, dictionary_sorted_compar compar);
 
 // ----------------------------------------------------------------------------
 // Traverse with foreach
@@ -252,20 +265,24 @@ int dictionary_sorted_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(
 #define DICTIONARY_LOCK_WRITE     'w'
 #define DICTIONARY_LOCK_REENTRANT 'z'
 
+void dictionary_write_lock(DICTIONARY *dict);
+void dictionary_write_unlock(DICTIONARY *dict);
+
 typedef DICTFE_CONST struct dictionary_foreach {
-    DICTIONARY *dict;           // the dictionary upon we work
+    DICTIONARY *dict; // the dictionary upon we work
 
     DICTIONARY_ITEM *item;      // the item we work on, to remember the position we are at
                                 // this can be used with dictionary_acquired_item_dup() to
                                 // acquire the currently working item.
 
-    DICTFE_CONST char *name;    // the dictionary name of the last item used
+    const char *name;           // the dictionary name of the last item used
     void *value;                // the dictionary value of the last item used
                                 // same as the return value of dictfe_start() and dictfe_next()
 
     size_t counter;             // counts the number of iterations made, starting from zero
 
     char rw;                    // the lock mode 'r' or 'w'
+    bool locked;                // true when the dictionary is locked
 } DICTFE;
 
 #define dfe_start_read(dict, value) dfe_start_rw(dict, value, DICTIONARY_LOCK_READ)
@@ -286,31 +303,33 @@ typedef DICTFE_CONST struct dictionary_foreach {
             dictionary_foreach_done(&value ## _dfe);                                                \
         } while(0)
 
-extern void *dictionary_foreach_start_rw(DICTFE *dfe, DICTIONARY *dict, char rw);
-extern void *dictionary_foreach_next(DICTFE *dfe);
-extern void  dictionary_foreach_done(DICTFE *dfe);
+#define dfe_unlock(value) dictionary_foreach_unlock(&value ## _dfe);
+
+void *dictionary_foreach_start_rw(DICTFE *dfe, DICTIONARY *dict, char rw);
+void *dictionary_foreach_next(DICTFE *dfe);
+void  dictionary_foreach_done(DICTFE *dfe);
+void  dictionary_foreach_unlock(DICTFE *dfe);
 
 // ----------------------------------------------------------------------------
 // Get statistics about the dictionary
 
-extern size_t dictionary_version(DICTIONARY *dict);
-extern size_t dictionary_entries(DICTIONARY *dict);
-extern size_t dictionary_referenced_items(DICTIONARY *dict);
-extern long int dictionary_stats_for_registry(DICTIONARY *dict);
+size_t dictionary_version(DICTIONARY *dict);
+size_t dictionary_entries(DICTIONARY *dict);
+size_t dictionary_referenced_items(DICTIONARY *dict);
 
 // for all cases that the caller does not provide a stats structure, this is where they are accumulated.
 extern struct dictionary_stats dictionary_stats_category_other;
 
-extern int dictionary_unittest(size_t entries);
+int dictionary_unittest(size_t entries);
 
 // ----------------------------------------------------------------------------
 // THREAD CACHE
 
-extern void *thread_cache_entry_get_or_set(void *key,
+void *thread_cache_entry_get_or_set(void *key,
                                     ssize_t key_length,
                                     void *value,
                                     void *(*transform_the_value_before_insert)(void *key, size_t key_length, void *value));
 
-extern void thread_cache_destroy(void);
+void thread_cache_destroy(void);
 
 #endif /* NETDATA_DICTIONARY_H */

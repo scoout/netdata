@@ -12,9 +12,9 @@ typedef enum rrdcalc_status {
     RRDCALC_STATUS_UNDEFINED     = -1,
     RRDCALC_STATUS_UNINITIALIZED =  0,
     RRDCALC_STATUS_CLEAR         =  1,
-    RRDCALC_STATUS_RAISED        =  2,
-    RRDCALC_STATUS_WARNING       =  3,
-    RRDCALC_STATUS_CRITICAL      =  4
+    RRDCALC_STATUS_RAISED        =  2, // DO NOT CHANGE THESE NUMBERS
+    RRDCALC_STATUS_WARNING       =  3, // DO NOT CHANGE THESE NUMBERS
+    RRDCALC_STATUS_CRITICAL      =  4, // DO NOT CHANGE THESE NUMBERS
 } RRDCALC_STATUS;
 
 typedef struct eval_variable {
@@ -69,19 +69,19 @@ typedef struct eval_expression {
 // parse the given string as an expression and return:
 //   a pointer to an expression if it parsed OK
 //   NULL in which case the pointer to error has the error code
-extern EVAL_EXPRESSION *expression_parse(const char *string, const char **failed_at, int *error);
+EVAL_EXPRESSION *expression_parse(const char *string, const char **failed_at, int *error);
 
 // free all resources allocated for an expression
-extern void expression_free(EVAL_EXPRESSION *expression);
+void expression_free(EVAL_EXPRESSION *expression);
 
 // convert an error code to a message
-extern const char *expression_strerror(int error);
+const char *expression_strerror(int error);
 
 // evaluate an expression and return
 // 1 = OK, the result is in: expression->result
 // 2 = FAILED, the error message is in: buffer_tostring(expression->error_msg)
-extern int expression_evaluate(EVAL_EXPRESSION *expression);
+int expression_evaluate(EVAL_EXPRESSION *expression);
 
-extern int health_variable_lookup(STRING *variable, struct rrdcalc *rc, NETDATA_DOUBLE *result);
+int health_variable_lookup(STRING *variable, struct rrdcalc *rc, NETDATA_DOUBLE *result);
 
 #endif //NETDATA_EVAL_H

@@ -3,15 +3,14 @@
 #ifndef NETDATA_EBPF_DISK_H
 #define NETDATA_EBPF_DISK_H 1
 
-// Module name
+// Module name & description
 #define NETDATA_EBPF_MODULE_NAME_DISK "disk"
+#define NETDATA_EBPF_DISK_MODULE_DESC "Monitor disk latency independent of filesystem."
 
 #include "libnetdata/avl/avl.h"
 #include "libnetdata/ebpf/ebpf.h"
 
 #define NETDATA_EBPF_PROC_PARTITIONS "/proc/partitions"
-
-#define NETDATA_LATENCY_DISK_SLEEP_MS 650000ULL
 
 // Process configuration name
 #define NETDATA_DISK_CONFIG_FILE "disk.conf"
@@ -56,9 +55,7 @@ typedef struct netdata_ebpf_disks {
     struct netdata_ebpf_disks *next;
 } netdata_ebpf_disks_t;
 
-enum ebpf_disk_tables {
-    NETDATA_DISK_READ
-};
+enum ebpf_disk_tables { NETDATA_DISK_IO };
 
 typedef struct block_key {
     uint32_t bin;
@@ -72,7 +69,7 @@ typedef struct netdata_ebpf_publish_disk {
 
 extern struct config disk_config;
 
-extern void *ebpf_disk_thread(void *ptr);
+void *ebpf_disk_thread(void *ptr);
 
 #endif /* NETDATA_EBPF_DISK_H */
 

@@ -3,7 +3,7 @@
 #include "plugin_proc.h"
 
 #define PLUGIN_PROC_MODULE_ZRAM_NAME "/sys/block/zram"
-#define rrdset_obsolete_and_pointer_null(st) do { if(st) { rrdset_is_obsolete(st); (st) = NULL; } } while(st)
+#define rrdset_obsolete_and_pointer_null(st) do { if(st) { rrdset_is_obsolete___safe_from_collector_thread(st); (st) = NULL; } } while(st)
 
 typedef struct mm_stat {
     unsigned long long orig_data_size;
@@ -32,8 +32,6 @@ typedef struct zram_device {
     RRDSET *st_alloc_efficiency;
     RRDDIM *rd_alloc_efficiency;
 } ZRAM_DEVICE;
-
-    // --------------------------------------------------------------------
 
 static int try_get_zram_major_number(procfile *file) {
     size_t i;
@@ -132,31 +130,33 @@ static inline void init_rrd(const char *name, ZRAM_DEVICE *d, int update_every) 
 
 static int init_devices(DICTIONARY *devices, unsigned int zram_id, int update_every) {
     int count = 0;
-    DIR *dir = opendir("/dev");
     struct dirent *de;
     struct stat st;
-    char filename[FILENAME_MAX + 1];
     procfile *ff = NULL;
     ZRAM_DEVICE device;
+    char filename[FILENAME_MAX + 1];
+
+    snprintfz(filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/dev");
+    DIR *dir = opendir(filename);
 
     if (unlikely(!dir))
         return 0;
     while ((de = readdir(dir)))
     {
-        snprintfz(filename, FILENAME_MAX, "/dev/%s", de->d_name);
+        snprintfz(filename, FILENAME_MAX, "%s/dev/%s", netdata_configured_host_prefix, de->d_name);
         if (unlikely(stat(filename, &st) != 0))
         {
-            error("ZRAM : Unable to stat %s: %s", filename, strerror(errno));
+            collector_error("ZRAM : Unable to stat %s: %s", filename, strerror(errno));
             continue;
         }
         if (major(st.st_rdev) == zram_id)
         {
-            info("ZRAM : Found device %s", filename);
-            snprintfz(filename, FILENAME_MAX, "/sys/block/%s/mm_stat", de->d_name);
+            collector_info("ZRAM : Found device %s", filename);
+            snprintfz(filename, FILENAME_MAX, "%s/sys/block/%s/mm_stat", netdata_configured_host_prefix, de->d_name);
             ff = procfile_open(filename, " \t:", PROCFILE_FLAG_DEFAULT);
             if (ff == NULL)
             {
-                error("ZRAM : Failed to open %s: %s", filename, strerror(errno));
+                collector_error("ZRAM : Failed to open %s: %s", filename, strerror(errno));
                 continue;
             }
             device.file = ff;
@@ -172,14 +172,13 @@ static int init_devices(DICTIONARY *devices, unsigned int zram_id, int update_ev
 static void free_device(DICTIONARY *dict, const char *name)
 {
     ZRAM_DEVICE *d = (ZRAM_DEVICE*)dictionary_get(dict, name);
-    info("ZRAM : Disabling monitoring of device %s", name);
+    collector_info("ZRAM : Disabling monitoring of device %s", name);
     rrdset_obsolete_and_pointer_null(d->st_usage);
     rrdset_obsolete_and_pointer_null(d->st_savings);
     rrdset_obsolete_and_pointer_null(d->st_alloc_efficiency);
     rrdset_obsolete_and_pointer_null(d->st_comp_ratio);
     dictionary_del(dict, name);
 }
-    // --------------------------------------------------------------------
 
 static inline int read_mm_stat(procfile *ff, MM_STAT *stats) {
     ff = procfile_readall(ff);
@@ -194,81 +193,72 @@ static inline int read_mm_stat(procfile *ff, MM_STAT *stats) {
         return -1;
     }
 
-    stats->orig_data_size = str2ull(procfile_word(ff, 0));
-    stats->compr_data_size = str2ull(procfile_word(ff, 1));
-    stats->mem_used_total = str2ull(procfile_word(ff, 2));
-    stats->mem_limit = str2ull(procfile_word(ff, 3));
-    stats->mem_used_max = str2ull(procfile_word(ff, 4));
-    stats->same_pages = str2ull(procfile_word(ff, 5));
-    stats->pages_compacted = str2ull(procfile_word(ff, 6));
+    stats->orig_data_size = str2ull(procfile_word(ff, 0), NULL);
+    stats->compr_data_size = str2ull(procfile_word(ff, 1), NULL);
+    stats->mem_used_total = str2ull(procfile_word(ff, 2), NULL);
+    stats->mem_limit = str2ull(procfile_word(ff, 3), NULL);
+    stats->mem_used_max = str2ull(procfile_word(ff, 4), NULL);
+    stats->same_pages = str2ull(procfile_word(ff, 5), NULL);
+    stats->pages_compacted = str2ull(procfile_word(ff, 6), NULL);
     return 0;
-}
-
-static inline int _collect_zram_metrics(const char* name, ZRAM_DEVICE *d, int advance, DICTIONARY* dict) {
-    MM_STAT mm;
-    int value;
-    if (unlikely(read_mm_stat(d->file, &mm) < 0))
-    {
-        free_device(dict, name);
-        return -1;
-    }
-
-    if (likely(advance))
-    {
-        rrdset_next(d->st_usage);
-        rrdset_next(d->st_savings);
-        rrdset_next(d->st_comp_ratio);
-        rrdset_next(d->st_alloc_efficiency);
-    }
-    // zram_usage
-    rrddim_set_by_pointer(d->st_usage, d->rd_compr_data_size, mm.compr_data_size);
-    rrddim_set_by_pointer(d->st_usage, d->rd_metadata_size, mm.mem_used_total - mm.compr_data_size);
-    rrdset_done(d->st_usage);
-    // zram_savings
-    rrddim_set_by_pointer(d->st_savings, d->rd_savings_size, mm.compr_data_size - mm.orig_data_size);
-    rrddim_set_by_pointer(d->st_savings, d->rd_original_size, mm.orig_data_size);
-    rrdset_done(d->st_savings);
-    // zram_ratio
-    value = mm.compr_data_size == 0 ? 1 : mm.orig_data_size * 100 / mm.compr_data_size;
-    rrddim_set_by_pointer(d->st_comp_ratio, d->rd_comp_ratio, value);
-    rrdset_done(d->st_comp_ratio);
-    // zram_efficiency
-    value = mm.mem_used_total == 0 ? 100 : (mm.compr_data_size * 1000000 / mm.mem_used_total);
-    rrddim_set_by_pointer(d->st_alloc_efficiency, d->rd_alloc_efficiency, value);
-    rrdset_done(d->st_alloc_efficiency);
-    return 0;
-}
-
-static int collect_first_zram_metrics(const DICTIONARY_ITEM *item, void *entry, void *data) {
-    const char *name = dictionary_acquired_item_name(item);
-
-    // collect without calling rrdset_next (init only)
-    return _collect_zram_metrics(name, (ZRAM_DEVICE *)entry, 0, (DICTIONARY *)data);
 }
 
 static int collect_zram_metrics(const DICTIONARY_ITEM *item, void *entry, void *data) {
     const char *name = dictionary_acquired_item_name(item);
+    ZRAM_DEVICE *dev = entry;
+    DICTIONARY *dict = data;
 
-    // collect with calling rrdset_next
-    return _collect_zram_metrics(name, (ZRAM_DEVICE *)entry, 1, (DICTIONARY *)data);
+    MM_STAT mm;
+    int value;
+
+    if (unlikely(read_mm_stat(dev->file, &mm) < 0)) {
+        free_device(dict, name);
+        return -1;
+    }
+
+    // zram_usage
+    rrddim_set_by_pointer(dev->st_usage, dev->rd_compr_data_size, mm.compr_data_size);
+    rrddim_set_by_pointer(dev->st_usage, dev->rd_metadata_size, mm.mem_used_total - mm.compr_data_size);
+    rrdset_done(dev->st_usage);
+
+    // zram_savings
+    rrddim_set_by_pointer(dev->st_savings, dev->rd_savings_size, mm.compr_data_size - mm.orig_data_size);
+    rrddim_set_by_pointer(dev->st_savings, dev->rd_original_size, mm.orig_data_size);
+    rrdset_done(dev->st_savings);
+
+    // zram_ratio
+    value = mm.compr_data_size == 0 ? 1 : mm.orig_data_size * 100 / mm.compr_data_size;
+    rrddim_set_by_pointer(dev->st_comp_ratio, dev->rd_comp_ratio, value);
+    rrdset_done(dev->st_comp_ratio);
+
+    // zram_efficiency
+    value = mm.mem_used_total == 0 ? 100 : (mm.compr_data_size * 1000000 / mm.mem_used_total);
+    rrddim_set_by_pointer(dev->st_alloc_efficiency, dev->rd_alloc_efficiency, value);
+    rrdset_done(dev->st_alloc_efficiency);
+
+    return 0;
 }
 
-    // --------------------------------------------------------------------
-
 int do_sys_block_zram(int update_every, usec_t dt) {
-    (void)dt;
     static procfile *ff = NULL;
     static DICTIONARY *devices = NULL;
     static int initialized = 0;
     static int device_count = 0;
     int zram_id = -1;
+
+    (void)dt;
+
     if (unlikely(!initialized))
     {
         initialized = 1;
-        ff = procfile_open("/proc/devices", " \t:", PROCFILE_FLAG_DEFAULT);
+
+        char filename[FILENAME_MAX + 1];
+        snprintfz(filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/proc/devices");
+
+        ff = procfile_open(filename, " \t:", PROCFILE_FLAG_DEFAULT);
         if (ff == NULL)
         {
-            error("Cannot read /proc/devices");
+            collector_error("Cannot read %s", filename);
             return 1;
         }
         ff = procfile_readall(ff);
@@ -283,17 +273,13 @@ int do_sys_block_zram(int update_every, usec_t dt) {
         }
         procfile_close(ff);
 
-        devices = dictionary_create(DICT_OPTION_SINGLE_THREADED);
+        devices = dictionary_create_advanced(DICT_OPTION_SINGLE_THREADED, &dictionary_stats_category_collectors, 0);
         device_count = init_devices(devices, (unsigned int)zram_id, update_every);
-        if (device_count < 1)
-            return 1;
-        dictionary_walkthrough_write(devices, collect_first_zram_metrics, devices);
     }
-    else
-    {
-        if (unlikely(device_count < 1))
-            return 1;
-        dictionary_walkthrough_write(devices, collect_zram_metrics, devices);
-    }
+
+    if (unlikely(device_count < 1))
+        return 1;
+
+    dictionary_walkthrough_write(devices, collect_zram_metrics, devices);
     return 0;
 }

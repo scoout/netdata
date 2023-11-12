@@ -3,12 +3,6 @@
 #ifndef NETDATA_COMMANDS_H
 #define NETDATA_COMMANDS_H 1
 
-#ifdef _WIN32
-# define PIPENAME "\\\\?\\pipe\\netdata-cli"
-#else
-# define PIPENAME "/tmp/netdata-ipc"
-#endif
-
 #define MAX_COMMAND_LENGTH 4096
 #define MAX_EXIT_STATUS_LENGTH 23 /* Can't ever be bigger than "X-18446744073709551616" */
 
@@ -25,6 +19,8 @@ typedef enum cmd {
     CMD_WRITE_CONFIG,
     CMD_PING,
     CMD_ACLK_STATE,
+    CMD_VERSION,
+    CMD_DUMPCONFIG,
     CMD_TOTAL_COMMANDS
 } cmd_t;
 
@@ -76,7 +72,7 @@ typedef struct command_info {
 typedef void (command_lock_t) (unsigned index);
 
 cmd_status_t execute_command(cmd_t idx, char *args, char **message);
-extern void commands_init(void);
-extern void commands_exit(void);
+void commands_init(void);
+void commands_exit(void);
 
 #endif //NETDATA_COMMANDS_H

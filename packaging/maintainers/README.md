@@ -1,10 +1,4 @@
-<!--
-title: "Package Maintainers"
-date: 2020-03-31
-custom_edit_url: https://github.com/netdata/netdata/edit/master/packaging/maintainers/README.md
--->
-
-# Package Maintainers
+# Package maintainers
 
 This page tracks the package maintainers for Netdata, for various operating systems and versions.
 

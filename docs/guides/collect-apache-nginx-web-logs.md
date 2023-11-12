@@ -1,22 +1,14 @@
-<!--
-title: "Monitor Nginx or Apache web server log files with Netdata"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/docs/guides/collect-apache-nginx-web-logs.md
--->
+# Monitor Nginx or Apache web server log files
 
-# Monitor Nginx or Apache web server log files with Netdata
+Parsing web server log files with Netdata, revealing the volume of redirects, requests and other metrics, can give you a better overview of your infrastructure.
 
-Log files have been a critical resource for developers and system administrators who want to understand the health and
-performance of their web servers, and Netdata is taking important steps to make them even more valuable.
-
-By parsing web server log files with Netdata, and seeing the volume of redirects, requests, or server errors over time,
-you can better understand what's happening on your infrastructure. Too many bad requests? Maybe a recent deploy missed a
-few small SVG icons. Too many requests? Time to batten down the hatches—it's a DDoS.
+Too many bad requests? Maybe a recent deploy missed a few small SVG icons. Too many requests? Time to batten down the hatches—it's a DDoS.
 
 You can use the [LTSV log format](http://ltsv.org/), track TLS and cipher usage, and the whole parser is faster than
 ever. In one test on a system with SSD storage, the collector consistently parsed the logs for 200,000 requests in
 200ms, using ~30% of a single core.
 
-The [web_log](https://learn.netdata.cloud/docs/agent/collectors/go.d.plugin/modules/weblog/) collector is currently compatible
+The [web_log](https://github.com/netdata/go.d.plugin/blob/master/modules/weblog/README.md) collector is currently compatible
 with [Nginx](https://nginx.org/en/) and [Apache](https://httpd.apache.org/).
 
 This guide will walk you through using the new Go-based web log collector to turn the logs these web servers
@@ -90,7 +82,7 @@ jobs:
 ```
 
 Restart Netdata with `sudo systemctl restart netdata`, or the [appropriate
-method](/docs/configure/start-stop-restart.md) for your system. Netdata should pick up your web server's access log and
+method](https://github.com/netdata/netdata/blob/master/docs/configure/start-stop-restart.md) for your system. Netdata should pick up your web server's access log and
 begin showing real-time charts!
 
 ### Custom log formats and fields
@@ -99,16 +91,16 @@ The web log collector is capable of parsing custom Nginx and Apache log formats 
 leave that topic for a separate guide.
 
 We do have [extensive
-documentation](https://learn.netdata.cloud/docs/agent/collectors/go.d.plugin/modules/weblog/#custom-log-format) on how
+documentation](https://github.com/netdata/go.d.plugin/blob/master/modules/weblog/README.md#custom-log-format) on how
 to build custom parsing for Nginx and Apache logs.
 
-## Tweak web log collector alarms
+## Tweak web log collector alerts
 
-Over time, we've created some default alarms for web log monitoring. These alarms are designed to work only when your
+Over time, we've created some default alerts for web log monitoring. These alerts are designed to work only when your
 web server is receiving more than 120 requests per minute. Otherwise, there's simply not enough data to make conclusions
 about what is "too few" or "too many."
 
--   [web log alarms](https://raw.githubusercontent.com/netdata/netdata/master/health/health.d/web_log.conf).
+-   [web log alerts](https://raw.githubusercontent.com/netdata/netdata/master/health/health.d/web_log.conf).
 
 You can also edit this file directly with `edit-config`:
 
@@ -116,12 +108,5 @@ You can also edit this file directly with `edit-config`:
 ./edit-config health.d/weblog.conf
 ```
 
-For more information about editing the defaults or writing new alarm entities, see our [health monitoring
-documentation](/health/README.md).
-
-## What's next?
-
-Now that you have web log collection up and running, we recommend you take a look at the collector's [documentation](https://learn.netdata.cloud/docs/agent/collectors/go.d.plugin/modules/weblog/) for some ideas of how you can turn these rather "boring" logs into powerful real-time tools for keeping your servers happy.
-
-Don't forget to give GitHub user [Wing924](https://github.com/Wing924) a big 👍 for his hard work in starting up the Go
-refactoring effort.
+For more information about editing the defaults or writing new alert entities, see our 
+[health monitoring documentation](https://github.com/netdata/netdata/blob/master/health/README.md).

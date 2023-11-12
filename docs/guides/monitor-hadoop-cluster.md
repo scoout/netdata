@@ -1,6 +1,10 @@
 <!--
 title: "Monitor a Hadoop cluster with Netdata"
+sidebar_label: "Monitor a Hadoop cluster with Netdata"
 custom_edit_url: https://github.com/netdata/netdata/edit/master/docs/guides/monitor-hadoop-cluster.md
+learn_status: "Published"
+learn_topic_type: "Tasks"
+learn_rel_path: "Miscellaneous"
 -->
 
 # Monitor a Hadoop cluster with Netdata
@@ -23,8 +27,8 @@ alternative, like the guide available from
 
 For more specifics on the collection modules used in this guide, read the respective pages in our documentation:
 
--   [HDFS](https://learn.netdata.cloud/docs/agent/collectors/go.d.plugin/modules/hdfs)
--   [Zookeeper](https://learn.netdata.cloud/docs/agent/collectors/go.d.plugin/modules/zookeeper)
+-   [HDFS](https://github.com/netdata/go.d.plugin/blob/master/modules/hdfs/README.md)
+-   [Zookeeper](https://github.com/netdata/go.d.plugin/blob/master/modules/zookeeper/README.md)
 
 ## Set up your HDFS and Zookeeper installations
 
@@ -160,7 +164,7 @@ jobs:
     address : 203.0.113.10:2182
 ```
 
-Finally, [restart Netdata](/docs/configure/start-stop-restart.md).
+Finally, [restart Netdata](https://github.com/netdata/netdata/blob/master/docs/configure/start-stop-restart.md).
 
 ```sh
 sudo systemctl restart netdata
@@ -169,13 +173,12 @@ sudo systemctl restart netdata
 Upon restart, Netdata should recognize your HDFS/Zookeeper servers, enable the HDFS and Zookeeper modules, and begin
 showing real-time metrics for both in your Netdata dashboard. 🎉
 
-## Configuring HDFS and Zookeeper alarms
+## Configuring HDFS and Zookeeper alerts
 
-The Netdata community helped us create sane defaults for alarms related to both HDFS and Zookeeper. You may want to
+The Netdata community helped us create sane defaults for alerts related to both HDFS and Zookeeper. You may want to
 investigate these to ensure they work well with your Hadoop implementation.
 
--   [HDFS alarms](https://raw.githubusercontent.com/netdata/netdata/master/health/health.d/hdfs.conf)
--   [Zookeeper alarms](https://raw.githubusercontent.com/netdata/netdata/master/health/health.d/zookeeper.conf)
+-   [HDFS alerts](https://raw.githubusercontent.com/netdata/netdata/master/health/health.d/hdfs.conf)
 
 You can also access/edit these files directly with `edit-config`:
 
@@ -184,20 +187,5 @@ sudo /etc/netdata/edit-config health.d/hdfs.conf
 sudo /etc/netdata/edit-config health.d/zookeeper.conf
 ```
 
-For more information about editing the defaults or writing new alarm entities, see our [health monitoring
-documentation](/health/README.md).
-
-## What's next?
-
-If you're having issues with Netdata auto-detecting your HDFS/Zookeeper servers, or want to help improve how Netdata
-collects or presents metrics from these services, feel free to [file an
-issue](https://github.com/netdata/netdata/issues/new?assignees=&labels=bug%2Cneeds+triage&template=BUG_REPORT.yml).
-
--   Read up on the [HDFS configuration
-    file](https://github.com/netdata/go.d.plugin/blob/master/config/go.d/hdfs.conf) to understand how to configure
-    global options or per-job options, such as username/password, TLS certificates, timeouts, and more.
--   Read up on the [Zookeeper configuration
-    file](https://github.com/netdata/go.d.plugin/blob/master/config/go.d/zookeeper.conf) to understand how to configure
-    global options or per-job options, timeouts, TLS certificates, and more.
-
-
+For more information about editing the defaults or writing new alert entities, see our 
+[health monitoring documentation](https://github.com/netdata/netdata/blob/master/health/README.md).

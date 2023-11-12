@@ -37,9 +37,9 @@ int init_json_instance(struct instance *instance)
 
     instance->check_response = exporting_discard_response;
 
-    instance->buffer = (void *)buffer_create(0);
+    instance->buffer = (void *)buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
     if (!instance->buffer) {
-        error("EXPORTING: cannot create buffer for json exporting connector instance %s", instance->config.name);
+        netdata_log_error("EXPORTING: cannot create buffer for json exporting connector instance %s", instance->config.name);
         return 1;
     }
 
@@ -71,10 +71,9 @@ int init_json_http_instance(struct instance *instance)
     instance->connector_specific_data = connector_specific_data;
 
 #ifdef ENABLE_HTTPS
-    connector_specific_data->flags = NETDATA_SSL_START;
-    connector_specific_data->conn = NULL;
+    connector_specific_data->ssl = NETDATA_SSL_UNSET_CONNECTION;
     if (instance->config.options & EXPORTING_OPTION_USE_TLS) {
-        security_start_ssl(NETDATA_SSL_CONTEXT_EXPORTING);
+        netdata_ssl_initialize_ctx(NETDATA_SSL_EXPORTING_CTX);
     }
 #endif
 
@@ -96,7 +95,7 @@ int init_json_http_instance(struct instance *instance)
 
     instance->check_response = exporting_discard_response;
 
-    instance->buffer = (void *)buffer_create(0);
+    instance->buffer = (void *)buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
 
     simple_connector_init(instance);
 
@@ -119,7 +118,7 @@ int init_json_http_instance(struct instance *instance)
 int format_host_labels_json_plaintext(struct instance *instance, RRDHOST *host)
 {
     if (!instance->labels_buffer)
-        instance->labels_buffer = buffer_create(1024);
+        instance->labels_buffer = buffer_create(1024, &netdata_buffers_statistics.buffers_exporters);
 
     if (unlikely(!sending_labels_configured(instance)))
         return 0;
@@ -201,9 +200,9 @@ int format_dimension_collected_json_plaintext(struct instance *instance, RRDDIM 
         rrdset_units(st),
         rrddim_id(rd),
         rrddim_name(rd),
-        rd->last_collected_value,
+        rd->collector.last_collected_value,
 
-        (unsigned long long)rd->last_collected_time.tv_sec);
+        (unsigned long long)rd->collector.last_collected_time.tv_sec);
 
     if (instance->config.type != EXPORTING_CONNECTOR_TYPE_JSON_HTTP) {
         buffer_strcat(instance->buffer, "\n");
@@ -344,7 +343,7 @@ void json_http_prepare_header(struct instance *instance)
         "\r\n",
         instance->config.destination,
         simple_connector_data->auth_string ? simple_connector_data->auth_string : "",
-        buffer_strlen(simple_connector_data->last_buffer->buffer));
+        (unsigned long int) buffer_strlen(simple_connector_data->last_buffer->buffer));
 
     return;
 }

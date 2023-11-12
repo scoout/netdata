@@ -1,8 +1,9 @@
 ---
-# Runs various ReviewDog based checks against PR with suggested changes to improve quality
+# Runs various linter checks against PR with suggested changes to improve quality
 name: Review
 on:
-  pull_request: null
+  pull_request:
+    types: [opened, reopened, labeled, synchronize]
 env:
   DISABLE_TELEMETRY: 1
 concurrency:
@@ -14,60 +15,94 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       actionlint: ${{ steps.actionlint.outputs.run }}
+      clangformat: ${{ steps.clangformat.outputs.run }}
       eslint: ${{ steps.eslint.outputs.run }}
+      flake8: ${{ steps.flake8.outputs.run }}
       hadolint: ${{ steps.hadolint.outputs.run }}
       shellcheck: ${{ steps.shellcheck.outputs.run }}
       yamllint: ${{ steps.yamllint.outputs.run }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
       - name: Check files for actionlint
         id: actionlint
         run: |
-          if git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '\.github/workflows/.*' ; then
-            echo '::set-output name=run::true'
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/actionlint') }}" = "true" ]; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          elif git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '\.github/workflows/.*' ; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
             echo 'GitHub Actions workflows have changed, need to run actionlint.'
           else
-            echo '::set-output name=run::false'
+            echo "run=false" >> "${GITHUB_OUTPUT}"
           fi
+      # - name: Check files for clang-format
+      #   id: clangformat
+      #   run: |
+      #     if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/clang-format') }}" = "true" ]; then
+      #       echo "run=true" >> "${GITHUB_OUTPUT}"
+      #     elif git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '\.cpp$|\.cxx$|\.c$|\.hpp$|\.hxx$|\.h$' ; then
+      #       echo "run=true" >> "${GITHUB_OUTPUT}"
+      #       echo 'C/C++ code has changed, need to run clang-format.'
+      #     else
+      #       echo "run=false" >> "${GITHUB_OUTPUT}"
+      #     fi
       - name: Check files for eslint
         id: eslint
         run: |
-          if git diff --name-only origin/${{ github.base_ref }} HEAD | grep -v "web/gui/dashboard" | grep -Eq '.*\.js|node\.d\.plugin\.in' ; then
-            echo '::set-output name=run::true'
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/eslint') }}" = "true" ]; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          elif git diff --name-only origin/${{ github.base_ref }} HEAD | grep -v "web/gui/v1" | grep -v "web/gui/v2" | grep -v "integrations/" | grep -Eq '.*\.js' ; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
             echo 'JS files have changed, need to run ESLint.'
           else
-            echo '::set-output name=run::false'
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Check files for flake8
+        id: flake8
+        run: |
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/flake8') }}" = "true" ]; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          elif git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '.*\.py' ; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+            echo 'Python files have changed, need to run flake8.'
+          else
+            echo "run=false" >> "${GITHUB_OUTPUT}"
           fi
       - name: Check files for hadolint
         id: hadolint
         run: |
-          if git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '.*Dockerfile.*' ; then
-            echo '::set-output name=run::true'
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/hadolint') }}" = "true" ]; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          elif git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '.*Dockerfile.*' ; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
             echo 'Dockerfiles have changed, need to run Hadolint.'
           else
-            echo '::set-output name=run::false'
+            echo "run=false" >> "${GITHUB_OUTPUT}"
           fi
       - name: Check files for shellcheck
         id: shellcheck
         run: |
-          if git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '.*\.sh.*' ; then
-            echo '::set-output name=run::true'
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/shellcheck') }}" = "true" ]; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          elif git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '.*\.sh.*' ; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
             echo 'Shell scripts have changed, need to run shellcheck.'
           else
-            echo '::set-output name=run::false'
+            echo "run=false" >> "${GITHUB_OUTPUT}"
           fi
       - name: Check files for yamllint
         id: yamllint
         run: |
-          if git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '.*\.ya?ml|python\.d/.*\.conf' ; then
-            echo '::set-output name=run::true'
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/yamllint') }}" = "true" ]; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          elif git diff --name-only origin/${{ github.base_ref }} HEAD | grep -Eq '.*\.ya?ml|python\.d/.*\.conf' ; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
             echo 'YAML files have changed, need to run yamllint.'
           else
-            echo '::set-output name=run::false'
+            echo "run=false" >> "${GITHUB_OUTPUT}"
           fi
 
   actionlint:
@@ -77,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Git clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
@@ -87,6 +122,39 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           reporter: github-pr-check
 
+  clang-format:
+    name: clang-format
+    needs: prep-review
+    if: needs.prep-review.outputs.clangformat == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git clone repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - name: Check for label
+        id: label
+        run: |
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'run-ci/clang-format') }}" = "true" ]; then
+            echo 'check-all=true' >> "${GITHUB_OUTPUT}"
+          else
+            echo 'check-all=false' >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Run clang-format
+        run: |
+          if [ "${{ steps.label.outputs.check-all }}" == 'true' ]; then
+            find . -regex '.*\.\(c\|cpp\|cxx\|h\|hpp\|hxx\)$' -exec clang-format -i --style=file '{}' \;
+          else
+            git diff --name-only origin/${{ github.base_ref }} HEAD | grep -E '\.cpp$|\.cxx$|\.c$|\.hpp$|\.hxx$|\.h$' | \
+            xargs -n 1 -r clang-format -i --style=file
+          fi
+          git status --porcelain=v1 > /tmp/porcelain
+          if [ -s /tmp/porcelain ]; then
+            cat /tmp/porcelain
+            exit 1
+          fi
+
   eslint:
     name: eslint
     needs: prep-review
@@ -94,7 +162,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Git clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
@@ -107,6 +175,27 @@ jobs:
           reporter: github-pr-check
           eslint_flags: '.'
 
+  flake8:
+    name: flake8
+    needs: prep-review
+    if: needs.prep-review.outputs.flake8 == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git clone repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: Run flake8
+        uses: reviewdog/action-flake8@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-check
+
   hadolint:
     name: hadolint
     needs: prep-review
@@ -114,7 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Git clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Run hadolint
@@ -130,7 +219,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Git clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
@@ -141,7 +230,10 @@ jobs:
           reporter: github-pr-check
           path: "."
           pattern: "*.sh*"
-          exclude: "./.git/*"
+          exclude: |
+            ./.git/*
+            packaging/makeself/makeself.sh
+            packaging/makeself/makeself-header.sh
 
   yamllint:
     name: yamllint
@@ -150,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Git clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0

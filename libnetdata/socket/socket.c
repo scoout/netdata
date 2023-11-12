@@ -1,6 +1,105 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE // for POLLRDHUP
+#endif
+
+#ifndef __BSD_VISIBLE
+#define __BSD_VISIBLE // for POLLRDHUP
+#endif
+
 #include "../libnetdata.h"
+
+bool ip_to_hostname(const char *ip, char *dst, size_t dst_len) {
+    if(!dst || !dst_len)
+        return false;
+
+    struct sockaddr_in sa;
+    struct sockaddr_in6 sa6;
+    struct sockaddr *sa_ptr;
+    int sa_len;
+
+    // Try to convert the IP address to sockaddr_in (IPv4)
+    if (inet_pton(AF_INET, ip, &(sa.sin_addr)) == 1) {
+        sa.sin_family = AF_INET;
+        sa_ptr = (struct sockaddr *)&sa;
+        sa_len = sizeof(sa);
+    }
+        // Try to convert the IP address to sockaddr_in6 (IPv6)
+    else if (inet_pton(AF_INET6, ip, &(sa6.sin6_addr)) == 1) {
+        sa6.sin6_family = AF_INET6;
+        sa_ptr = (struct sockaddr *)&sa6;
+        sa_len = sizeof(sa6);
+    }
+
+    else {
+        dst[0] = '\0';
+        return false;
+    }
+
+    // Perform the reverse lookup
+    int res = getnameinfo(sa_ptr, sa_len, dst, dst_len, NULL, 0, NI_NAMEREQD);
+    if(res != 0)
+        return false;
+
+    return true;
+}
+
+SOCKET_PEERS socket_peers(int sock_fd) {
+    SOCKET_PEERS peers;
+
+    if(sock_fd < 0) {
+        strncpyz(peers.peer.ip, "not connected", sizeof(peers.peer.ip) - 1);
+        peers.peer.port = 0;
+
+        strncpyz(peers.local.ip, "not connected", sizeof(peers.local.ip) - 1);
+        peers.local.port = 0;
+
+        return peers;
+    }
+
+    struct sockaddr_storage addr;
+    socklen_t addr_len = sizeof(addr);
+
+    // Get peer info
+    if (getpeername(sock_fd, (struct sockaddr *)&addr, &addr_len) == 0) {
+        if (addr.ss_family == AF_INET) {  // IPv4
+            struct sockaddr_in *s = (struct sockaddr_in *)&addr;
+            inet_ntop(AF_INET, &s->sin_addr, peers.peer.ip, sizeof(peers.peer.ip));
+            peers.peer.port = ntohs(s->sin_port);
+        }
+        else {  // IPv6
+            struct sockaddr_in6 *s = (struct sockaddr_in6 *)&addr;
+            inet_ntop(AF_INET6, &s->sin6_addr, peers.peer.ip, sizeof(peers.peer.ip));
+            peers.peer.port = ntohs(s->sin6_port);
+        }
+    }
+    else {
+        strncpyz(peers.peer.ip, "unknown", sizeof(peers.peer.ip) - 1);
+        peers.peer.port = 0;
+    }
+
+    // Get local info
+    addr_len = sizeof(addr);
+    if (getsockname(sock_fd, (struct sockaddr *)&addr, &addr_len) == 0) {
+        if (addr.ss_family == AF_INET) {  // IPv4
+            struct sockaddr_in *s = (struct sockaddr_in *) &addr;
+            inet_ntop(AF_INET, &s->sin_addr, peers.local.ip, sizeof(peers.local.ip));
+            peers.local.port = ntohs(s->sin_port);
+        } else {  // IPv6
+            struct sockaddr_in6 *s = (struct sockaddr_in6 *) &addr;
+            inet_ntop(AF_INET6, &s->sin6_addr, peers.local.ip, sizeof(peers.local.ip));
+            peers.local.port = ntohs(s->sin6_port);
+        }
+    }
+    else {
+        strncpyz(peers.local.ip, "unknown", sizeof(peers.local.ip) - 1);
+        peers.local.port = 0;
+    }
+
+    return peers;
+}
+
 
 // --------------------------------------------------------------------------------------------------------------------
 // various library calls
@@ -11,6 +110,46 @@
 #define LARGE_SOCK_SIZE 4096
 #endif
 
+bool fd_is_socket(int fd) {
+    int type;
+    socklen_t len = sizeof(type);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &len) == -1)
+        return false;
+
+    return true;
+}
+
+bool sock_has_output_error(int fd) {
+    if(fd < 0) {
+        //internal_error(true, "invalid socket %d", fd);
+        return false;
+    }
+
+//    if(!fd_is_socket(fd)) {
+//        //internal_error(true, "fd %d is not a socket", fd);
+//        return false;
+//    }
+
+    short int errors = POLLERR | POLLHUP | POLLNVAL;
+
+#ifdef POLLRDHUP
+    errors |= POLLRDHUP;
+#endif
+
+    struct pollfd pfd = {
+            .fd = fd,
+            .events = POLLOUT | errors,
+            .revents = 0,
+    };
+
+    if(poll(&pfd, 1, 0) == -1) {
+        //internal_error(true, "poll() failed");
+        return false;
+    }
+
+    return ((pfd.revents & errors) || !(pfd.revents & POLLOUT));
+}
+
 int sock_setnonblock(int fd) {
     int flags;
 
@@ -19,7 +158,7 @@ int sock_setnonblock(int fd) {
 
     int ret = fcntl(fd, F_SETFL, flags);
     if(ret < 0)
-        error("Failed to set O_NONBLOCK on socket %d", fd);
+        netdata_log_error("Failed to set O_NONBLOCK on socket %d", fd);
 
     return ret;
 }
@@ -32,7 +171,7 @@ int sock_delnonblock(int fd) {
 
     int ret = fcntl(fd, F_SETFL, flags);
     if(ret < 0)
-        error("Failed to remove O_NONBLOCK on socket %d", fd);
+        netdata_log_error("Failed to remove O_NONBLOCK on socket %d", fd);
 
     return ret;
 }
@@ -41,7 +180,7 @@ int sock_setreuse(int fd, int reuse) {
     int ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
     if(ret == -1)
-        error("Failed to set SO_REUSEADDR on socket %d", fd);
+        netdata_log_error("Failed to set SO_REUSEADDR on socket %d", fd);
 
     return ret;
 }
@@ -52,7 +191,7 @@ int sock_setreuse_port(int fd, int reuse) {
 #ifdef SO_REUSEPORT
     ret = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
     if(ret == -1 && errno != ENOPROTOOPT)
-        error("failed to set SO_REUSEPORT on socket %d", fd);
+        netdata_log_error("failed to set SO_REUSEPORT on socket %d", fd);
 #else
     ret = -1;
 #endif
@@ -66,7 +205,7 @@ int sock_enlarge_in(int fd) {
     ret = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bs, sizeof(bs));
 
     if(ret == -1)
-        error("Failed to set SO_RCVBUF on socket %d", fd);
+        netdata_log_error("Failed to set SO_RCVBUF on socket %d", fd);
 
     return ret;
 }
@@ -76,7 +215,7 @@ int sock_enlarge_out(int fd) {
     ret = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bs, sizeof(bs));
 
     if(ret == -1)
-        error("Failed to set SO_SNDBUF on socket %d", fd);
+        netdata_log_error("Failed to set SO_SNDBUF on socket %d", fd);
 
     return ret;
 }
@@ -111,11 +250,11 @@ char *strdup_client_description(int family, const char *protocol, const char *ip
 int create_listen_socket_unix(const char *path, int listen_backlog) {
     int sock;
 
-    debug(D_LISTENER, "LISTENER: UNIX creating new listening socket on path '%s'", path);
+    netdata_log_debug(D_LISTENER, "LISTENER: UNIX creating new listening socket on path '%s'", path);
 
     sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if(sock < 0) {
-        error("LISTENER: UNIX socket() on path '%s' failed.", path);
+        netdata_log_error("LISTENER: UNIX socket() on path '%s' failed.", path);
         return -1;
     }
 
@@ -129,37 +268,37 @@ int create_listen_socket_unix(const char *path, int listen_backlog) {
 
     errno = 0;
     if (unlink(path) == -1 && errno != ENOENT)
-        error("LISTENER: failed to remove existing (probably obsolete or left-over) file on UNIX socket path '%s'.", path);
+        netdata_log_error("LISTENER: failed to remove existing (probably obsolete or left-over) file on UNIX socket path '%s'.", path);
 
     if(bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
         close(sock);
-        error("LISTENER: UNIX bind() on path '%s' failed.", path);
+        netdata_log_error("LISTENER: UNIX bind() on path '%s' failed.", path);
         return -1;
     }
 
     // we have to chmod this to 0777 so that the client will be able
     // to read from and write to this socket.
     if(chmod(path, 0777) == -1)
-        error("LISTENER: failed to chmod() socket file '%s'.", path);
+        netdata_log_error("LISTENER: failed to chmod() socket file '%s'.", path);
 
     if(listen(sock, listen_backlog) < 0) {
         close(sock);
-        error("LISTENER: UNIX listen() on path '%s' failed.", path);
+        netdata_log_error("LISTENER: UNIX listen() on path '%s' failed.", path);
         return -1;
     }
 
-    debug(D_LISTENER, "LISTENER: Listening on UNIX path '%s'", path);
+    netdata_log_debug(D_LISTENER, "LISTENER: Listening on UNIX path '%s'", path);
     return sock;
 }
 
 int create_listen_socket4(int socktype, const char *ip, uint16_t port, int listen_backlog) {
     int sock;
 
-    debug(D_LISTENER, "LISTENER: IPv4 creating new listening socket on ip '%s' port %d, socktype %d", ip, port, socktype);
+    netdata_log_debug(D_LISTENER, "LISTENER: IPv4 creating new listening socket on ip '%s' port %d, socktype %d", ip, port, socktype);
 
     sock = socket(AF_INET, socktype, 0);
     if(sock < 0) {
-        error("LISTENER: IPv4 socket() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
+        netdata_log_error("LISTENER: IPv4 socket() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
         return -1;
     }
 
@@ -175,24 +314,24 @@ int create_listen_socket4(int socktype, const char *ip, uint16_t port, int liste
 
     int ret = inet_pton(AF_INET, ip, (void *)&name.sin_addr.s_addr);
     if(ret != 1) {
-        error("LISTENER: Failed to convert IP '%s' to a valid IPv4 address.", ip);
+        netdata_log_error("LISTENER: Failed to convert IP '%s' to a valid IPv4 address.", ip);
         close(sock);
         return -1;
     }
 
     if(bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
         close(sock);
-        error("LISTENER: IPv4 bind() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
+        netdata_log_error("LISTENER: IPv4 bind() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
         return -1;
     }
 
     if(socktype == SOCK_STREAM && listen(sock, listen_backlog) < 0) {
         close(sock);
-        error("LISTENER: IPv4 listen() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
+        netdata_log_error("LISTENER: IPv4 listen() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
         return -1;
     }
 
-    debug(D_LISTENER, "LISTENER: Listening on IPv4 ip '%s' port %d, socktype %d", ip, port, socktype);
+    netdata_log_debug(D_LISTENER, "LISTENER: Listening on IPv4 ip '%s' port %d, socktype %d", ip, port, socktype);
     return sock;
 }
 
@@ -200,11 +339,11 @@ int create_listen_socket6(int socktype, uint32_t scope_id, const char *ip, int p
     int sock;
     int ipv6only = 1;
 
-    debug(D_LISTENER, "LISTENER: IPv6 creating new listening socket on ip '%s' port %d, socktype %d", ip, port, socktype);
+    netdata_log_debug(D_LISTENER, "LISTENER: IPv6 creating new listening socket on ip '%s' port %d, socktype %d", ip, port, socktype);
 
     sock = socket(AF_INET6, socktype, 0);
     if (sock < 0) {
-        error("LISTENER: IPv6 socket() on ip '%s' port %d, socktype %d, failed.", ip, port, socktype);
+        netdata_log_error("LISTENER: IPv6 socket() on ip '%s' port %d, socktype %d, failed.", ip, port, socktype);
         return -1;
     }
 
@@ -215,7 +354,7 @@ int create_listen_socket6(int socktype, uint32_t scope_id, const char *ip, int p
 
     /* IPv6 only */
     if(setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (void*)&ipv6only, sizeof(ipv6only)) != 0)
-        error("LISTENER: Cannot set IPV6_V6ONLY on ip '%s' port %d, socktype %d.", ip, port, socktype);
+        netdata_log_error("LISTENER: Cannot set IPV6_V6ONLY on ip '%s' port %d, socktype %d.", ip, port, socktype);
 
     struct sockaddr_in6 name;
     memset(&name, 0, sizeof(struct sockaddr_in6));
@@ -225,7 +364,7 @@ int create_listen_socket6(int socktype, uint32_t scope_id, const char *ip, int p
 
     int ret = inet_pton(AF_INET6, ip, (void *)&name.sin6_addr.s6_addr);
     if(ret != 1) {
-        error("LISTENER: Failed to convert IP '%s' to a valid IPv6 address.", ip);
+        netdata_log_error("LISTENER: Failed to convert IP '%s' to a valid IPv6 address.", ip);
         close(sock);
         return -1;
     }
@@ -234,23 +373,23 @@ int create_listen_socket6(int socktype, uint32_t scope_id, const char *ip, int p
 
     if (bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
         close(sock);
-        error("LISTENER: IPv6 bind() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
+        netdata_log_error("LISTENER: IPv6 bind() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
         return -1;
     }
 
     if (socktype == SOCK_STREAM && listen(sock, listen_backlog) < 0) {
         close(sock);
-        error("LISTENER: IPv6 listen() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
+        netdata_log_error("LISTENER: IPv6 listen() on ip '%s' port %d, socktype %d failed.", ip, port, socktype);
         return -1;
     }
 
-    debug(D_LISTENER, "LISTENER: Listening on IPv6 ip '%s' port %d, socktype %d", ip, port, socktype);
+    netdata_log_debug(D_LISTENER, "LISTENER: Listening on IPv6 ip '%s' port %d, socktype %d", ip, port, socktype);
     return sock;
 }
 
 static inline int listen_sockets_add(LISTEN_SOCKETS *sockets, int fd, int family, int socktype, const char *protocol, const char *ip, uint16_t port, int acl_flags) {
     if(sockets->opened >= MAX_LISTEN_FDS) {
-        error("LISTENER: Too many listening sockets. Failed to add listening %s socket at ip '%s' port %d, protocol %s, socktype %d", protocol, ip, port, protocol, socktype);
+        netdata_log_error("LISTENER: Too many listening sockets. Failed to add listening %s socket at ip '%s' port %d, protocol %s, socktype %d", protocol, ip, port, protocol, socktype);
         close(fd);
         return -1;
     }
@@ -380,7 +519,7 @@ static inline int bind_to_this(LISTEN_SOCKETS *sockets, const char *definition, 
         protocol_str = "unix";
         int fd = create_listen_socket_unix(path, listen_backlog);
         if (fd == -1) {
-            error("LISTENER: Cannot create unix socket '%s'", path);
+            netdata_log_error("LISTENER: Cannot create unix socket '%s'", path);
             sockets->failed++;
         } else {
             acl_flags = WEB_CLIENT_ACL_DASHBOARD | WEB_CLIENT_ACL_REGISTRY | WEB_CLIENT_ACL_BADGE | WEB_CLIENT_ACL_MGMT | WEB_CLIENT_ACL_NETDATACONF | WEB_CLIENT_ACL_STREAMING | WEB_CLIENT_ACL_SSL_DEFAULT;
@@ -446,7 +585,7 @@ static inline int bind_to_this(LISTEN_SOCKETS *sockets, const char *definition, 
     if(*interface) {
         scope_id = if_nametoindex(interface);
         if(!scope_id)
-            error("LISTENER: Cannot find a network interface named '%s'. Continuing with limiting the network interface", interface);
+            netdata_log_error("LISTENER: Cannot find a network interface named '%s'. Continuing with limiting the network interface", interface);
     }
 
     if(!*ip || *ip == '*' || !strcmp(ip, "any") || !strcmp(ip, "all"))
@@ -466,7 +605,7 @@ static inline int bind_to_this(LISTEN_SOCKETS *sockets, const char *definition, 
 
     int r = getaddrinfo(ip, port, &hints, &result);
     if (r != 0) {
-        error("LISTENER: getaddrinfo('%s', '%s'): %s\n", ip, port, gai_strerror(r));
+        netdata_log_error("LISTENER: getaddrinfo('%s', '%s'): %s\n", ip, port, gai_strerror(r));
         return -1;
     }
 
@@ -483,7 +622,7 @@ static inline int bind_to_this(LISTEN_SOCKETS *sockets, const char *definition, 
                 struct sockaddr_in *sin = (struct sockaddr_in *) rp->ai_addr;
                 inet_ntop(AF_INET, &sin->sin_addr, rip, INET_ADDRSTRLEN);
                 rport = ntohs(sin->sin_port);
-                // info("Attempting to listen on IPv4 '%s' ('%s'), port %d ('%s'), socktype %d", rip, ip, rport, port, socktype);
+                // netdata_log_info("Attempting to listen on IPv4 '%s' ('%s'), port %d ('%s'), socktype %d", rip, ip, rport, port, socktype);
                 fd = create_listen_socket4(socktype, rip, rport, listen_backlog);
                 break;
             }
@@ -492,18 +631,18 @@ static inline int bind_to_this(LISTEN_SOCKETS *sockets, const char *definition, 
                 struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) rp->ai_addr;
                 inet_ntop(AF_INET6, &sin6->sin6_addr, rip, INET6_ADDRSTRLEN);
                 rport = ntohs(sin6->sin6_port);
-                // info("Attempting to listen on IPv6 '%s' ('%s'), port %d ('%s'), socktype %d", rip, ip, rport, port, socktype);
+                // netdata_log_info("Attempting to listen on IPv6 '%s' ('%s'), port %d ('%s'), socktype %d", rip, ip, rport, port, socktype);
                 fd = create_listen_socket6(socktype, scope_id, rip, rport, listen_backlog);
                 break;
             }
 
             default:
-                debug(D_LISTENER, "LISTENER: Unknown socket family %d", family);
+                netdata_log_debug(D_LISTENER, "LISTENER: Unknown socket family %d", family);
                 break;
         }
 
         if (fd == -1) {
-            error("LISTENER: Cannot bind to ip '%s', port %d", rip, rport);
+            netdata_log_error("LISTENER: Cannot bind to ip '%s', port %d", rip, rport);
             sockets->failed++;
         }
         else {
@@ -525,12 +664,12 @@ int listen_sockets_setup(LISTEN_SOCKETS *sockets) {
     long long int old_port = sockets->default_port;
     long long int new_port = appconfig_get_number(sockets->config, sockets->config_section, "default port", sockets->default_port);
     if(new_port < 1 || new_port > 65535) {
-        error("LISTENER: Invalid listen port %lld given. Defaulting to %lld.", new_port, old_port);
+        netdata_log_error("LISTENER: Invalid listen port %lld given. Defaulting to %lld.", new_port, old_port);
         sockets->default_port = (uint16_t) appconfig_set_number(sockets->config, sockets->config_section, "default port", old_port);
     }
     else sockets->default_port = (uint16_t)new_port;
 
-    debug(D_OPTIONS, "LISTENER: Default listen port set to %d.", sockets->default_port);
+    netdata_log_debug(D_OPTIONS, "LISTENER: Default listen port set to %d.", sockets->default_port);
 
     char *s = appconfig_get(sockets->config, sockets->config_section, "bind to", sockets->default_bind_to);
     while(*s) {
@@ -555,7 +694,7 @@ int listen_sockets_setup(LISTEN_SOCKETS *sockets) {
     if(sockets->failed) {
         size_t i;
         for(i = 0; i < sockets->opened ;i++)
-            info("LISTENER: Listen socket %s opened successfully.", sockets->fds_names[i]);
+            netdata_log_info("LISTENER: Listen socket %s opened successfully.", sockets->fds_names[i]);
     }
 
     return (int)sockets->opened;
@@ -572,13 +711,13 @@ int listen_sockets_setup(LISTEN_SOCKETS *sockets) {
 static inline int connect_to_unix(const char *path, struct timeval *timeout) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if(fd == -1) {
-        error("Failed to create UNIX socket() for '%s'", path);
+        netdata_log_error("Failed to create UNIX socket() for '%s'", path);
         return -1;
     }
 
     if(timeout) {
         if(setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (char *) timeout, sizeof(struct timeval)) < 0)
-            error("Failed to set timeout on UNIX socket '%s'", path);
+            netdata_log_error("Failed to set timeout on UNIX socket '%s'", path);
     }
 
     struct sockaddr_un addr;
@@ -587,12 +726,12 @@ static inline int connect_to_unix(const char *path, struct timeval *timeout) {
     strncpy(addr.sun_path, path, sizeof(addr.sun_path)-1);
 
     if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        error("Cannot connect to UNIX socket on path '%s'.", path);
+        netdata_log_error("Cannot connect to UNIX socket on path '%s'.", path);
         close(fd);
         return -1;
     }
 
-    debug(D_CONNECT_TO, "Connected to UNIX socket on path '%s'.", path);
+    netdata_log_debug(D_CONNECT_TO, "Connected to UNIX socket on path '%s'.", path);
 
     return fd;
 }
@@ -618,7 +757,7 @@ int connect_to_this_ip46(int protocol, int socktype, const char *host, uint32_t 
 
     int ai_err = getaddrinfo(host, service, &hints, &ai_head);
     if (ai_err != 0) {
-        error("Cannot resolve host '%s', port '%s': %s", host, service, gai_strerror(ai_err));
+        netdata_log_error("Cannot resolve host '%s', port '%s': %s", host, service, gai_strerror(ai_err));
         return -1;
     }
 
@@ -643,7 +782,7 @@ int connect_to_this_ip46(int protocol, int socktype, const char *host, uint32_t 
                     sizeof(servBfr),
                     NI_NUMERICHOST | NI_NUMERICSERV);
 
-        debug(D_CONNECT_TO, "Address info: host = '%s', service = '%s', ai_flags = 0x%02X, ai_family = %d (PF_INET = %d, PF_INET6 = %d), ai_socktype = %d (SOCK_STREAM = %d, SOCK_DGRAM = %d), ai_protocol = %d (IPPROTO_TCP = %d, IPPROTO_UDP = %d), ai_addrlen = %lu (sockaddr_in = %lu, sockaddr_in6 = %lu)",
+        netdata_log_debug(D_CONNECT_TO, "Address info: host = '%s', service = '%s', ai_flags = 0x%02X, ai_family = %d (PF_INET = %d, PF_INET6 = %d), ai_socktype = %d (SOCK_STREAM = %d, SOCK_DGRAM = %d), ai_protocol = %d (IPPROTO_TCP = %d, IPPROTO_UDP = %d), ai_addrlen = %lu (sockaddr_in = %lu, sockaddr_in6 = %lu)",
               hostBfr,
               servBfr,
               (unsigned int)ai->ai_flags,
@@ -665,7 +804,7 @@ int connect_to_this_ip46(int protocol, int socktype, const char *host, uint32_t 
                 struct sockaddr_in *pSadrIn = (struct sockaddr_in *)ai->ai_addr;
                 (void)pSadrIn;
 
-                debug(D_CONNECT_TO, "ai_addr = sin_family: %d (AF_INET = %d, AF_INET6 = %d), sin_addr: '%s', sin_port: '%s'",
+                netdata_log_debug(D_CONNECT_TO, "ai_addr = sin_family: %d (AF_INET = %d, AF_INET6 = %d), sin_addr: '%s', sin_port: '%s'",
                       pSadrIn->sin_family,
                       AF_INET,
                       AF_INET6,
@@ -678,7 +817,7 @@ int connect_to_this_ip46(int protocol, int socktype, const char *host, uint32_t 
                 struct sockaddr_in6 *pSadrIn6 = (struct sockaddr_in6 *) ai->ai_addr;
                 (void)pSadrIn6;
 
-                debug(D_CONNECT_TO,"ai_addr = sin6_family: %d (AF_INET = %d, AF_INET6 = %d), sin6_addr: '%s', sin6_port: '%s', sin6_flowinfo: %u, sin6_scope_id: %u",
+                netdata_log_debug(D_CONNECT_TO,"ai_addr = sin6_family: %d (AF_INET = %d, AF_INET6 = %d), sin6_addr: '%s', sin6_port: '%s', sin6_flowinfo: %u, sin6_scope_id: %u",
                       pSadrIn6->sin6_family,
                       AF_INET,
                       AF_INET6,
@@ -690,7 +829,7 @@ int connect_to_this_ip46(int protocol, int socktype, const char *host, uint32_t 
             }
 
             default: {
-                debug(D_CONNECT_TO, "Unknown protocol family %d.", ai->ai_family);
+                netdata_log_debug(D_CONNECT_TO, "Unknown protocol family %d.", ai->ai_family);
                 continue;
             }
         }
@@ -699,42 +838,58 @@ int connect_to_this_ip46(int protocol, int socktype, const char *host, uint32_t 
         if(fd != -1) {
             if(timeout) {
                 if(setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (char *) timeout, sizeof(struct timeval)) < 0)
-                    error("Failed to set timeout on the socket to ip '%s' port '%s'", hostBfr, servBfr);
+                    netdata_log_error("Failed to set timeout on the socket to ip '%s' port '%s'", hostBfr, servBfr);
             }
 
             errno = 0;
             if(connect(fd, ai->ai_addr, ai->ai_addrlen) < 0) {
                 if(errno == EALREADY || errno == EINPROGRESS) {
-                    info("Waiting for connection to ip %s port %s to be established", hostBfr, servBfr);
+                    internal_error(true, "Waiting for connection to ip %s port %s to be established", hostBfr, servBfr);
 
-                    fd_set fds;
-                    FD_ZERO(&fds);
-                    FD_SET(0, &fds);
-                    int rc = select (1, NULL, &fds, NULL, timeout);
+                    // Convert 'struct timeval' to milliseconds for poll():
+                    int timeout_milliseconds = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
 
-                    if(rc > 0 && FD_ISSET(fd, &fds)) {
-                        info("connect() to ip %s port %s completed successfully", hostBfr, servBfr);
+                    struct pollfd fds[1];
+                    fds[0].fd = fd;
+                    fds[0].events = POLLOUT;  // We are looking for the ability to write to the socket
+
+                    int ret = poll(fds, 1, timeout_milliseconds);
+                    if (ret > 0) {
+                        // poll() completed normally. We can check the revents to see what happened
+                        if (fds[0].revents & POLLOUT) {
+                            // connect() completed successfully, socket is writable.
+                            netdata_log_info("connect() to ip %s port %s completed successfully", hostBfr, servBfr);
+                        }
+                        else {
+                            // This means that the socket is in error. We will close it and set fd to -1
+                            netdata_log_error("Failed to connect to '%s', port '%s'.", hostBfr, servBfr);
+                            close(fd);
+                            fd = -1;
+                        }
                     }
-                    else if(rc == -1) {
-                        error("Failed to connect to '%s', port '%s'. select() returned %d", hostBfr, servBfr, rc);
+                    else if (ret == 0) {
+                        // poll() timed out, the connection is not established within the specified timeout.
+                        errno = 0;
+                        netdata_log_error("Timed out while connecting to '%s', port '%s'.", hostBfr, servBfr);
                         close(fd);
                         fd = -1;
                     }
                     else {
-                        error("Timed out while connecting to '%s', port '%s'. select() returned %d", hostBfr, servBfr, rc);
+                        // poll() returned an error.
+                        netdata_log_error("Failed to connect to '%s', port '%s'. poll() returned %d", hostBfr, servBfr, ret);
                         close(fd);
                         fd = -1;
                     }
                 }
                 else {
-                    error("Failed to connect to '%s', port '%s'", hostBfr, servBfr);
+                    netdata_log_error("Failed to connect to '%s', port '%s'", hostBfr, servBfr);
                     close(fd);
                     fd = -1;
                 }
             }
 
             if(fd != -1)
-                debug(D_CONNECT_TO, "Connected to '%s' on port '%s'.", hostBfr, servBfr);
+                netdata_log_debug(D_CONNECT_TO, "Connected to '%s' on port '%s'.", hostBfr, servBfr);
         }
     }
 
@@ -779,6 +934,10 @@ int connect_to_this(const char *definition, int default_port, struct timeval *ti
         char *path = host + 5;
         return connect_to_unix(path, timeout);
     }
+    else if(*host == '/') {
+        char *path = host;
+        return connect_to_unix(path, timeout);
+    }
 
     char *e = host;
     if(*e == '[') {
@@ -806,17 +965,17 @@ int connect_to_this(const char *definition, int default_port, struct timeval *ti
         service = e;
     }
 
-    debug(D_CONNECT_TO, "Attempting connection to host = '%s', service = '%s', interface = '%s', protocol = %d (tcp = %d, udp = %d)", host, service, interface, protocol, IPPROTO_TCP, IPPROTO_UDP);
+    netdata_log_debug(D_CONNECT_TO, "Attempting connection to host = '%s', service = '%s', interface = '%s', protocol = %d (tcp = %d, udp = %d)", host, service, interface, protocol, IPPROTO_TCP, IPPROTO_UDP);
 
     if(!*host) {
-        error("Definition '%s' does not specify a host.", definition);
+        netdata_log_error("Definition '%s' does not specify a host.", definition);
         return -1;
     }
 
     if(*interface) {
         scope_id = if_nametoindex(interface);
         if(!scope_id)
-            error("Cannot find a network interface named '%s'. Continuing with limiting the network interface", interface);
+            netdata_log_error("Cannot find a network interface named '%s'. Continuing with limiting the network interface", interface);
     }
 
     if(!*service)
@@ -826,41 +985,92 @@ int connect_to_this(const char *definition, int default_port, struct timeval *ti
     return connect_to_this_ip46(protocol, socktype, host, scope_id, service, timeout);
 }
 
-int connect_to_one_of(const char *destination, int default_port, struct timeval *timeout, size_t *reconnects_counter, char *connected_to, size_t connected_to_size) {
-    int sock = -1;
-
+void foreach_entry_in_connection_string(const char *destination, bool (*callback)(char *entry, void *data), void *data) {
     const char *s = destination;
     while(*s) {
         const char *e = s;
-
-        // skip path, moving both s(tart) and e(nd)
-        if(*e == '/')
-            while(!isspace(*e) && *e != ',') s = ++e;
 
         // skip separators, moving both s(tart) and e(nd)
         while(isspace(*e) || *e == ',') s = ++e;
 
         // move e(nd) to the first separator
-        while(*e && !isspace(*e) && *e != ',' && *e != '/') e++;
+        while(*e && !isspace(*e) && *e != ',') e++;
 
         // is there anything?
         if(!*s || s == e) break;
 
         char buf[e - s + 1];
         strncpyz(buf, s, e - s);
-        if(reconnects_counter) *reconnects_counter += 1;
-        sock = connect_to_this(buf, default_port, timeout);
-        if(sock != -1) {
-            if(connected_to && connected_to_size) {
-                strncpy(connected_to, buf, connected_to_size);
-                connected_to[connected_to_size - 1] = '\0';
-            }
-            break;
-        }
+
+        if(callback(buf, data)) break;
+
         s = e;
     }
+}
 
-    return sock;
+struct connect_to_one_of_data {
+    int default_port;
+    struct timeval *timeout;
+    size_t *reconnects_counter;
+    char *connected_to;
+    size_t connected_to_size;
+    int sock;
+};
+
+static bool connect_to_one_of_callback(char *entry, void *data) {
+    struct connect_to_one_of_data *t = data;
+
+    if(t->reconnects_counter)
+        t->reconnects_counter++;
+
+    t->sock = connect_to_this(entry, t->default_port, t->timeout);
+    if(t->sock != -1) {
+        if(t->connected_to && t->connected_to_size) {
+            strncpyz(t->connected_to, entry, t->connected_to_size);
+            t->connected_to[t->connected_to_size - 1] = '\0';
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+int connect_to_one_of(const char *destination, int default_port, struct timeval *timeout, size_t *reconnects_counter, char *connected_to, size_t connected_to_size) {
+    struct connect_to_one_of_data t = {
+        .default_port = default_port,
+        .timeout = timeout,
+        .reconnects_counter = reconnects_counter,
+        .connected_to = connected_to,
+        .connected_to_size = connected_to_size,
+        .sock = -1,
+    };
+
+    foreach_entry_in_connection_string(destination, connect_to_one_of_callback, &t);
+
+    return t.sock;
+}
+
+static bool connect_to_one_of_urls_callback(char *entry, void *data) {
+    char *s = strchr(entry, '/');
+    if(s) *s = '\0';
+
+    return connect_to_one_of_callback(entry, data);
+}
+
+int connect_to_one_of_urls(const char *destination, int default_port, struct timeval *timeout, size_t *reconnects_counter, char *connected_to, size_t connected_to_size) {
+    struct connect_to_one_of_data t = {
+        .default_port = default_port,
+        .timeout = timeout,
+        .reconnects_counter = reconnects_counter,
+        .connected_to = connected_to,
+        .connected_to_size = connected_to_size,
+        .sock = -1,
+    };
+
+    foreach_entry_in_connection_string(destination, connect_to_one_of_urls_callback, &t);
+
+    return t.sock;
 }
 
 
@@ -868,7 +1078,7 @@ int connect_to_one_of(const char *destination, int default_port, struct timeval 
 // helpers to send/receive data in one call, in blocking mode, with a timeout
 
 #ifdef ENABLE_HTTPS
-ssize_t recv_timeout(struct netdata_ssl *ssl,int sockfd, void *buf, size_t len, int flags, int timeout) {
+ssize_t recv_timeout(NETDATA_SSL *ssl,int sockfd, void *buf, size_t len, int flags, int timeout) {
 #else
 ssize_t recv_timeout(int sockfd, void *buf, size_t len, int flags, int timeout) {
 #endif
@@ -897,21 +1107,22 @@ ssize_t recv_timeout(int sockfd, void *buf, size_t len, int flags, int timeout) 
             return 0;
         }
 
-        if(fd.events & POLLIN) break;
+        if(fd.revents & POLLIN)
+            break;
     }
 
 #ifdef ENABLE_HTTPS
-    if (ssl->conn) {
-        if (!ssl->flags) {
-            return SSL_read(ssl->conn,buf,len);
-        }
+    if (SSL_connection(ssl)) {
+        return netdata_ssl_read(ssl, buf, len);
     }
 #endif
+
+    internal_error(true, "%s(): calling recv()", __FUNCTION__ );
     return recv(sockfd, buf, len, flags);
 }
 
 #ifdef ENABLE_HTTPS
-ssize_t send_timeout(struct netdata_ssl *ssl,int sockfd, void *buf, size_t len, int flags, int timeout) {
+ssize_t send_timeout(NETDATA_SSL *ssl,int sockfd, void *buf, size_t len, int flags, int timeout) {
 #else
 ssize_t send_timeout(int sockfd, void *buf, size_t len, int flags, int timeout) {
 #endif
@@ -940,13 +1151,17 @@ ssize_t send_timeout(int sockfd, void *buf, size_t len, int flags, int timeout) 
             return 0;
         }
 
-        if(fd.events & POLLOUT) break;
+        if(fd.revents & POLLOUT) break;
     }
 
 #ifdef ENABLE_HTTPS
     if(ssl->conn) {
-        if (!ssl->flags) {
-            return SSL_write(ssl->conn, buf, len);
+        if (SSL_connection(ssl)) {
+            return netdata_ssl_write(ssl, buf, len);
+        }
+        else {
+            netdata_log_error("cannot write to SSL connection - connection is not ready.");
+            return -1;
         }
     }
 #endif
@@ -1006,10 +1221,10 @@ int accept4(int sock, struct sockaddr *addr, socklen_t *addrlen, int flags) {
  *                        update the client_host if uninitialized - ensure the hostsize is the number
  *                        of *writable* bytes (i.e. be aware of the strdup used to compact the pollinfo).
  */
-extern int connection_allowed(int fd, char *client_ip, char *client_host, size_t hostsize, SIMPLE_PATTERN *access_list,
-                              const char *patname, int allow_dns)
+int connection_allowed(int fd, char *client_ip, char *client_host, size_t hostsize, SIMPLE_PATTERN *access_list,
+                       const char *patname, int allow_dns)
 {
-    debug(D_LISTENER,"checking %s... (allow_dns=%d)", patname, allow_dns);
+    netdata_log_debug(D_LISTENER,"checking %s... (allow_dns=%d)", patname, allow_dns);
     if (!access_list)
         return 1;
     if (simple_pattern_matches(access_list, client_ip))
@@ -1024,7 +1239,7 @@ extern int connection_allowed(int fd, char *client_ip, char *client_host, size_t
         if (err != 0 ||
             (err = getnameinfo((struct sockaddr *)&sadr, addrlen, client_host, (socklen_t)hostsize,
                               NULL, 0, NI_NAMEREQD)) != 0) {
-            error("Incoming %s on '%s' does not match a numeric pattern, and host could not be resolved (err=%s)",
+            netdata_log_error("Incoming %s on '%s' does not match a numeric pattern, and host could not be resolved (err=%s)",
                   patname, client_ip, gai_strerror(err));
             if (hostsize >= 8)
                 strcpy(client_host,"UNKNOWN");
@@ -1032,7 +1247,7 @@ extern int connection_allowed(int fd, char *client_ip, char *client_host, size_t
         }
         struct addrinfo *addr_infos = NULL;
         if (getaddrinfo(client_host, NULL, NULL, &addr_infos) !=0 ) {
-            error("LISTENER: cannot validate hostname '%s' from '%s' by resolving it",
+            netdata_log_error("LISTENER: cannot validate hostname '%s' from '%s' by resolving it",
                   client_host, client_ip);
             if (hostsize >= 8)
                 strcpy(client_host,"UNKNOWN");
@@ -1051,7 +1266,7 @@ extern int connection_allowed(int fd, char *client_ip, char *client_host, size_t
                     inet_ntop(AF_INET6, &((struct sockaddr_in6*)(scan->ai_addr))->sin6_addr, address, INET6_ADDRSTRLEN);
                     break;
             }
-            debug(D_LISTENER, "Incoming ip %s rev-resolved onto %s, validating against forward-resolution %s",
+            netdata_log_debug(D_LISTENER, "Incoming ip %s rev-resolved onto %s, validating against forward-resolution %s",
                   client_ip, client_host, address);
             if (!strcmp(client_ip, address)) {
                 validated = 1;
@@ -1060,7 +1275,7 @@ extern int connection_allowed(int fd, char *client_ip, char *client_host, size_t
             scan = scan->ai_next;
         }
         if (!validated) {
-            error("LISTENER: Cannot validate '%s' as ip of '%s', not listed in DNS", client_ip, client_host);
+            netdata_log_error("LISTENER: Cannot validate '%s' as ip of '%s', not listed in DNS", client_ip, client_host);
             if (hostsize >= 8)
                 strcpy(client_host,"UNKNOWN");
         }
@@ -1068,7 +1283,7 @@ extern int connection_allowed(int fd, char *client_ip, char *client_host, size_t
             freeaddrinfo(addr_infos);
     }
     if (!simple_pattern_matches(access_list, client_host)) {
-        debug(D_LISTENER, "Incoming connection on '%s' (%s) does not match allowed pattern for %s",
+        netdata_log_debug(D_LISTENER, "Incoming connection on '%s' (%s) does not match allowed pattern for %s",
               client_ip, client_host, patname);
         return 0;
     }
@@ -1086,13 +1301,12 @@ int accept_socket(int fd, int flags, char *client_ip, size_t ipsize, char *clien
     if (likely(nfd >= 0)) {
         if (getnameinfo((struct sockaddr *)&sadr, addrlen, client_ip, (socklen_t)ipsize,
                         client_port, (socklen_t)portsize, NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
-            error("LISTENER: cannot getnameinfo() on received client connection.");
-            strncpyz(client_ip, "UNKNOWN", ipsize - 1);
-            strncpyz(client_port, "UNKNOWN", portsize - 1);
+            netdata_log_error("LISTENER: cannot getnameinfo() on received client connection.");
+            strncpyz(client_ip, "UNKNOWN", ipsize);
+            strncpyz(client_port, "UNKNOWN", portsize);
         }
         if (!strcmp(client_ip, "127.0.0.1") || !strcmp(client_ip, "::1")) {
-            strncpy(client_ip, "localhost", ipsize);
-            client_ip[ipsize - 1] = '\0';
+            strncpyz(client_ip, "localhost", ipsize);
         }
 
 #ifdef __FreeBSD__
@@ -1105,32 +1319,31 @@ int accept_socket(int fd, int flags, char *client_ip, size_t ipsize, char *clien
 
         switch (((struct sockaddr *)&sadr)->sa_family) {
             case AF_UNIX:
-                debug(D_LISTENER, "New UNIX domain web client from %s on socket %d.", client_ip, fd);
+                netdata_log_debug(D_LISTENER, "New UNIX domain web client from %s on socket %d.", client_ip, fd);
                 // set the port - certain versions of libc return garbage on unix sockets
-                strncpy(client_port, "UNIX", portsize);
-                client_port[portsize - 1] = '\0';
+                strncpyz(client_port, "UNIX", portsize);
                 break;
 
             case AF_INET:
-                debug(D_LISTENER, "New IPv4 web client from %s port %s on socket %d.", client_ip, client_port, fd);
+                netdata_log_debug(D_LISTENER, "New IPv4 web client from %s port %s on socket %d.", client_ip, client_port, fd);
                 break;
 
             case AF_INET6:
                 if (strncmp(client_ip, "::ffff:", 7) == 0) {
                     memmove(client_ip, &client_ip[7], strlen(&client_ip[7]) + 1);
-                    debug(D_LISTENER, "New IPv4 web client from %s port %s on socket %d.", client_ip, client_port, fd);
+                    netdata_log_debug(D_LISTENER, "New IPv4 web client from %s port %s on socket %d.", client_ip, client_port, fd);
                 }
                 else
-                    debug(D_LISTENER, "New IPv6 web client from %s port %s on socket %d.", client_ip, client_port, fd);
+                    netdata_log_debug(D_LISTENER, "New IPv6 web client from %s port %s on socket %d.", client_ip, client_port, fd);
                 break;
 
             default:
-                debug(D_LISTENER, "New UNKNOWN web client from %s port %s on socket %d.", client_ip, client_port, fd);
+                netdata_log_debug(D_LISTENER, "New UNKNOWN web client from %s port %s on socket %d.", client_ip, client_port, fd);
                 break;
         }
         if (!connection_allowed(nfd, client_ip, client_host, hostsize, access_list, "connection", allow_dns)) {
             errno = 0;
-            error("Permission denied for client '%s', port '%s'", client_ip, client_port);
+            netdata_log_error("Permission denied for client '%s', port '%s'", client_ip, client_port);
             close(nfd);
             nfd = -1;
             errno = EPERM;
@@ -1138,7 +1351,7 @@ int accept_socket(int fd, int flags, char *client_ip, size_t ipsize, char *clien
     }
 #ifdef HAVE_ACCEPT4
     else if (errno == ENOSYS)
-        error("netdata has been compiled with the assumption that the system has the accept4() call, but it is not here. Recompile netdata like this: ./configure --disable-accept4 ...");
+        netdata_log_error("netdata has been compiled with the assumption that the system has the accept4() call, but it is not here. Recompile netdata like this: ./configure --disable-accept4 ...");
 #endif
 
     return nfd;
@@ -1166,19 +1379,19 @@ inline POLLINFO *poll_add_fd(POLLJOB *p
                              , int   (*snd_callback)(POLLINFO * /*pi*/, short int * /*events*/)
                              , void *data
 ) {
-    debug(D_POLLFD, "POLLFD: ADD: request to add fd %d, slots = %zu, used = %zu, min = %zu, max = %zu, next free = %zd", fd, p->slots, p->used, p->min, p->max, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
+    netdata_log_debug(D_POLLFD, "POLLFD: ADD: request to add fd %d, slots = %zu, used = %zu, min = %zu, max = %zu, next free = %zd", fd, p->slots, p->used, p->min, p->max, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
 
     if(unlikely(fd < 0)) return NULL;
 
     //if(p->limit && p->used >= p->limit) {
-    //    info("Max sockets limit reached (%zu sockets), dropping connection", p->used);
+    //    netdata_log_info("Max sockets limit reached (%zu sockets), dropping connection", p->used);
     //    close(fd);
     //    return NULL;
     //}
 
     if(unlikely(!p->first_free)) {
         size_t new_slots = p->slots + POLL_FDS_INCREASE_STEP;
-        debug(D_POLLFD, "POLLFD: ADD: increasing size (current = %zu, new = %zu, used = %zu, min = %zu, max = %zu)", p->slots, new_slots, p->used, p->min, p->max);
+        netdata_log_debug(D_POLLFD, "POLLFD: ADD: increasing size (current = %zu, new = %zu, used = %zu, min = %zu, max = %zu)", p->slots, new_slots, p->used, p->min, p->max);
 
         p->fds = reallocz(p->fds, sizeof(struct pollfd) * new_slots);
         p->inf = reallocz(p->inf, sizeof(POLLINFO) * new_slots);
@@ -1186,7 +1399,7 @@ inline POLLINFO *poll_add_fd(POLLJOB *p
         // reset all the newly added slots
         ssize_t i;
         for(i = new_slots - 1; i >= (ssize_t)p->slots ; i--) {
-            debug(D_POLLFD, "POLLFD: ADD: resetting new slot %zd", i);
+            netdata_log_debug(D_POLLFD, "POLLFD: ADD: resetting new slot %zd", i);
             p->fds[i].fd = -1;
             p->fds[i].events = 0;
             p->fds[i].revents = 0;
@@ -1217,7 +1430,7 @@ inline POLLINFO *poll_add_fd(POLLJOB *p
     POLLINFO *pi = p->first_free;
     p->first_free = p->first_free->next;
 
-    debug(D_POLLFD, "POLLFD: ADD: selected slot %zu, next free is %zd", pi->slot, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
+    netdata_log_debug(D_POLLFD, "POLLFD: ADD: selected slot %zu, next free is %zd", pi->slot, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
 
     struct pollfd *pf = &p->fds[pi->slot];
     pf->fd = fd;
@@ -1259,7 +1472,7 @@ inline POLLINFO *poll_add_fd(POLLJOB *p
     }
     netdata_thread_enable_cancelability();
 
-    debug(D_POLLFD, "POLLFD: ADD: completed, slots = %zu, used = %zu, min = %zu, max = %zu, next free = %zd", p->slots, p->used, p->min, p->max, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
+    netdata_log_debug(D_POLLFD, "POLLFD: ADD: completed, slots = %zu, used = %zu, min = %zu, max = %zu, next free = %zd", p->slots, p->used, p->min, p->max, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
 
     return pi;
 }
@@ -1268,7 +1481,7 @@ inline void poll_close_fd(POLLINFO *pi) {
     POLLJOB *p = pi->p;
 
     struct pollfd *pf = &p->fds[pi->slot];
-    debug(D_POLLFD, "POLLFD: DEL: request to clear slot %zu (fd %d), old next free was %zd", pi->slot, pf->fd, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
+    netdata_log_debug(D_POLLFD, "POLLFD: DEL: request to clear slot %zu (fd %d), old next free was %zd", pi->slot, pf->fd, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
 
     if(unlikely(pf->fd == -1)) return;
 
@@ -1279,7 +1492,7 @@ inline void poll_close_fd(POLLINFO *pi) {
 
         if(likely(!(pi->flags & POLLINFO_FLAG_DONT_CLOSE))) {
             if(close(pf->fd) == -1)
-                error("Failed to close() poll_events() socket %d", pf->fd);
+                netdata_log_error("Failed to close() poll_events() socket %d", pf->fd);
         }
     }
 
@@ -1321,7 +1534,7 @@ inline void poll_close_fd(POLLINFO *pi) {
     }
     netdata_thread_enable_cancelability();
 
-    debug(D_POLLFD, "POLLFD: DEL: completed, slots = %zu, used = %zu, min = %zu, max = %zu, next free = %zd", p->slots, p->used, p->min, p->max, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
+    netdata_log_debug(D_POLLFD, "POLLFD: DEL: completed, slots = %zu, used = %zu, min = %zu, max = %zu, next free = %zd", p->slots, p->used, p->min, p->max, p->first_free?(ssize_t)p->first_free->slot:(ssize_t)-1);
 }
 
 void *poll_default_add_callback(POLLINFO *pi, short int *events, void *data) {
@@ -1329,14 +1542,14 @@ void *poll_default_add_callback(POLLINFO *pi, short int *events, void *data) {
     (void)events;
     (void)data;
 
-    // error("POLLFD: internal error: poll_default_add_callback() called");
+    // netdata_log_error("POLLFD: internal error: poll_default_add_callback() called");
 
     return NULL;
 }
 
 void poll_default_del_callback(POLLINFO *pi) {
     if(pi->data)
-        error("POLLFD: internal error: del_callback_default() called with data pointer - possible memory leak");
+        netdata_log_error("POLLFD: internal error: del_callback_default() called with data pointer - possible memory leak");
 }
 
 int poll_default_rcv_callback(POLLINFO *pi, short int *events) {
@@ -1350,12 +1563,12 @@ int poll_default_rcv_callback(POLLINFO *pi, short int *events) {
         if (rc < 0) {
             // read failed
             if (errno != EWOULDBLOCK && errno != EAGAIN) {
-                error("POLLFD: poll_default_rcv_callback(): recv() failed with %zd.", rc);
+                netdata_log_error("POLLFD: poll_default_rcv_callback(): recv() failed with %zd.", rc);
                 return -1;
             }
         } else if (rc) {
             // data received
-            info("POLLFD: internal error: poll_default_rcv_callback() is discarding %zd bytes received on socket %d", rc, pi->fd);
+            netdata_log_info("POLLFD: internal error: poll_default_rcv_callback() is discarding %zd bytes received on socket %d", rc, pi->fd);
         }
     } while (rc != -1);
 
@@ -1365,7 +1578,7 @@ int poll_default_rcv_callback(POLLINFO *pi, short int *events) {
 int poll_default_snd_callback(POLLINFO *pi, short int *events) {
     *events &= ~POLLOUT;
 
-    info("POLLFD: internal error: poll_default_snd_callback(): nothing to send on socket %d", pi->fd);
+    netdata_log_info("POLLFD: internal error: poll_default_snd_callback(): nothing to send on socket %d", pi->fd);
     return 0;
 }
 
@@ -1387,7 +1600,7 @@ static void poll_events_cleanup(void *data) {
 }
 
 static int poll_process_error(POLLINFO *pi, struct pollfd *pf, short int revents) {
-    error("POLLFD: LISTENER: received %s %s %s on socket at slot %zu (fd %d) client '%s' port '%s' expecting %s %s %s, having %s %s %s"
+    netdata_log_error("POLLFD: LISTENER: received %s %s %s on socket at slot %zu (fd %d) client '%s' port '%s' expecting %s %s %s, having %s %s %s"
           , revents & POLLERR  ? "POLLERR" : ""
           , revents & POLLHUP  ? "POLLHUP" : ""
           , revents & POLLNVAL ? "POLLNVAL" : ""
@@ -1408,7 +1621,7 @@ static inline int poll_process_send(POLLJOB *p, POLLINFO *pi, struct pollfd *pf,
     pi->last_sent_t = now;
     pi->send_count++;
 
-    debug(D_POLLFD, "POLLFD: LISTENER: sending data to socket on slot %zu (fd %d)", pi->slot, pf->fd);
+    netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: sending data to socket on slot %zu (fd %d)", pi->slot, pf->fd);
 
     pf->events = 0;
 
@@ -1429,7 +1642,7 @@ static inline int poll_process_tcp_read(POLLJOB *p, POLLINFO *pi, struct pollfd 
     pi->last_received_t = now;
     pi->recv_count++;
 
-    debug(D_POLLFD, "POLLFD: LISTENER: reading data from TCP client slot %zu (fd %d)", pi->slot, pf->fd);
+    netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: reading data from TCP client slot %zu (fd %d)", pi->slot, pf->fd);
 
     pf->events = 0;
 
@@ -1450,7 +1663,7 @@ static inline int poll_process_udp_read(POLLINFO *pi, struct pollfd *pf, time_t 
     pi->last_received_t = now;
     pi->recv_count++;
 
-    debug(D_POLLFD, "POLLFD: LISTENER: reading data from UDP slot %zu (fd %d)", pi->slot, pf->fd);
+    netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: reading data from UDP slot %zu (fd %d)", pi->slot, pf->fd);
 
     // TODO: access_list is not applied to UDP
     // but checking the access list on every UDP packet will destroy
@@ -1470,13 +1683,13 @@ static int poll_process_new_tcp_connection(POLLJOB *p, POLLINFO *pi, struct poll
     pi->last_received_t = now;
     pi->recv_count++;
 
-    debug(D_POLLFD, "POLLFD: LISTENER: accepting connections from slot %zu (fd %d)", pi->slot, pf->fd);
+    netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: accepting connections from slot %zu (fd %d)", pi->slot, pf->fd);
 
     char client_ip[INET6_ADDRSTRLEN] = "";
     char client_port[NI_MAXSERV] = "";
     char client_host[NI_MAXHOST] = "";
 
-    debug(D_POLLFD, "POLLFD: LISTENER: calling accept4() slot %zu (fd %d)", pi->slot, pf->fd);
+    netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: calling accept4() slot %zu (fd %d)", pi->slot, pf->fd);
 
     int nfd = accept_socket(
         pf->fd,SOCK_NONBLOCK,
@@ -1487,14 +1700,15 @@ static int poll_process_new_tcp_connection(POLLJOB *p, POLLINFO *pi, struct poll
     if (unlikely(nfd < 0)) {
         // accept failed
 
-        debug(D_POLLFD, "POLLFD: LISTENER: accept4() slot %zu (fd %d) failed.", pi->slot, pf->fd);
+        netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: accept4() slot %zu (fd %d) failed.", pi->slot, pf->fd);
 
         if(unlikely(errno == EMFILE)) {
-            error("POLLFD: LISTENER: too many open files - sleeping for 1ms - used by this thread %zu, max for this thread %zu", p->used, p->limit);
-            usleep(1000); // 1ms
+            error_limit_static_global_var(erl, 10, 1000);
+            error_limit(&erl, "POLLFD: LISTENER: too many open files - used by this thread %zu, max for this thread %zu",
+                      p->used, p->limit);
         }
         else if(unlikely(errno != EWOULDBLOCK && errno != EAGAIN))
-            error("POLLFD: LISTENER: accept() failed.");
+            netdata_log_error("POLLFD: LISTENER: accept() failed.");
 
     }
     else {
@@ -1530,6 +1744,7 @@ void poll_events(LISTEN_SOCKETS *sockets
         , int   (*rcv_callback)(POLLINFO * /*pi*/, short int * /*events*/)
         , int   (*snd_callback)(POLLINFO * /*pi*/, short int * /*events*/)
         , void  (*tmr_callback)(void * /*timer_data*/)
+        , bool  (*check_to_stop_callback)(void)
         , SIMPLE_PATTERN *access_list
         , int allow_dns
         , void *data
@@ -1540,7 +1755,7 @@ void poll_events(LISTEN_SOCKETS *sockets
         , size_t max_tcp_sockets
 ) {
     if(!sockets || !sockets->opened) {
-        error("POLLFD: internal error: no listening sockets are opened");
+        netdata_log_error("POLLFD: internal error: no listening sockets are opened");
         return;
     }
 
@@ -1593,7 +1808,7 @@ void poll_events(LISTEN_SOCKETS *sockets
         );
 
         pi->data = data;
-        info("POLLFD: LISTENER: listening on '%s'", (sockets->fds_names[i])?sockets->fds_names[i]:"UNKNOWN");
+        netdata_log_info("POLLFD: LISTENER: listening on '%s'", (sockets->fds_names[i])?sockets->fds_names[i]:"UNKNOWN");
     }
 
     int listen_sockets_active = 1;
@@ -1612,12 +1827,12 @@ void poll_events(LISTEN_SOCKETS *sockets
 
     netdata_thread_cleanup_push(poll_events_cleanup, &p);
 
-    while(!netdata_exit) {
+    while(!check_to_stop_callback()) {
         if(unlikely(timer_usec)) {
             now_usec = now_boottime_usec();
 
             if(unlikely(timer_usec && now_usec >= next_timer_usec)) {
-                debug(D_POLLFD, "Calling timer callback after %zu usec", (size_t)(now_usec - last_timer_usec));
+                netdata_log_debug(D_POLLFD, "Calling timer callback after %zu usec", (size_t)(now_usec - last_timer_usec));
                 last_timer_usec = now_usec;
                 p.tmr_callback(p.timer_data);
                 now_usec = now_boottime_usec();
@@ -1634,7 +1849,7 @@ void poll_events(LISTEN_SOCKETS *sockets
         // enable or disable the TCP listening sockets, based on the current number of sockets used and the limit set
         if((listen_sockets_active && (p.limit && p.used >= p.limit)) || (!listen_sockets_active && (!p.limit || p.used < p.limit))) {
             listen_sockets_active = !listen_sockets_active;
-            info("%s listening sockets (used TCP sockets %zu, max allowed for this worker %zu)", (listen_sockets_active)?"ENABLING":"DISABLING", p.used, p.limit);
+            netdata_log_info("%s listening sockets (used TCP sockets %zu, max allowed for this worker %zu)", (listen_sockets_active)?"ENABLING":"DISABLING", p.used, p.limit);
             for (i = 0; i <= p.max; i++) {
                 if(p.inf[i].flags & POLLINFO_FLAG_SERVER_SOCKET && p.inf[i].socktype == SOCK_STREAM) {
                     p.fds[i].events = (short int) ((listen_sockets_active) ? POLLIN : 0);
@@ -1642,16 +1857,16 @@ void poll_events(LISTEN_SOCKETS *sockets
             }
         }
 
-        debug(D_POLLFD, "POLLFD: LISTENER: Waiting on %zu sockets for %zu ms...", p.max + 1, (size_t)timeout_ms);
+        netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: Waiting on %zu sockets for %zu ms...", p.max + 1, (size_t)timeout_ms);
         retval = poll(p.fds, p.max + 1, timeout_ms);
         time_t now = now_boottime_sec();
 
         if(unlikely(retval == -1)) {
-            error("POLLFD: LISTENER: poll() failed while waiting on %zu sockets.", p.max + 1);
+            netdata_log_error("POLLFD: LISTENER: poll() failed while waiting on %zu sockets.", p.max + 1);
             break;
         }
         else if(unlikely(!retval)) {
-            debug(D_POLLFD, "POLLFD: LISTENER: poll() timeout.");
+            netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: poll() timeout.");
         }
         else {
             POLLINFO *pi;
@@ -1705,7 +1920,7 @@ void poll_events(LISTEN_SOCKETS *sockets
                             conns[conns_max++] = i;
                         }
                         else
-                            error("POLLFD: LISTENER: server slot %zu (fd %d) connection from %s port %s using unhandled socket type %d."
+                            netdata_log_error("POLLFD: LISTENER: server slot %zu (fd %d) connection from %s port %s using unhandled socket type %d."
                                  , i
                                  , pi->fd
                                  , pi->client_ip ? pi->client_ip : "<undefined-ip>"
@@ -1714,7 +1929,7 @@ void poll_events(LISTEN_SOCKETS *sockets
                             );
                     }
                     else
-                        error("POLLFD: LISTENER: client slot %zu (fd %d) data from %s port %s using flags %08X is neither client nor server."
+                        netdata_log_error("POLLFD: LISTENER: client slot %zu (fd %d) data from %s port %s using flags %08X is neither client nor server."
                               , i
                               , pi->fd
                               , pi->client_ip ? pi->client_ip : "<undefined-ip>"
@@ -1723,7 +1938,7 @@ void poll_events(LISTEN_SOCKETS *sockets
                         );
                 }
                 else
-                    error("POLLFD: LISTENER: socket slot %zu (fd %d) client %s port %s unhandled event id %d."
+                    netdata_log_error("POLLFD: LISTENER: socket slot %zu (fd %d) client %s port %s unhandled event id %d."
                       , i
                       , pi->fd
                       , pi->client_ip ? pi->client_ip : "<undefined-ip>"
@@ -1782,7 +1997,7 @@ void poll_events(LISTEN_SOCKETS *sockets
 
                 if(likely(pi->flags & POLLINFO_FLAG_CLIENT_SOCKET)) {
                     if (unlikely(pi->send_count == 0 && p.complete_request_timeout > 0 && (now - pi->connected_t) >= p.complete_request_timeout)) {
-                        info("POLLFD: LISTENER: client slot %zu (fd %d) from %s port %s has not sent a complete request in %zu seconds - closing it. "
+                        netdata_log_info("POLLFD: LISTENER: client slot %zu (fd %d) from %s port %s has not sent a complete request in %zu seconds - closing it. "
                               , i
                               , pi->fd
                               , pi->client_ip ? pi->client_ip : "<undefined-ip>"
@@ -1792,7 +2007,7 @@ void poll_events(LISTEN_SOCKETS *sockets
                         poll_close_fd(pi);
                     }
                     else if(unlikely(pi->recv_count && p.idle_timeout > 0 && now - ((pi->last_received_t > pi->last_sent_t) ? pi->last_received_t : pi->last_sent_t) >= p.idle_timeout )) {
-                        info("POLLFD: LISTENER: client slot %zu (fd %d) from %s port %s is idle for more than %zu seconds - closing it. "
+                        netdata_log_info("POLLFD: LISTENER: client slot %zu (fd %d) from %s port %s is idle for more than %zu seconds - closing it. "
                               , i
                               , pi->fd
                               , pi->client_ip ? pi->client_ip : "<undefined-ip>"
@@ -1807,5 +2022,5 @@ void poll_events(LISTEN_SOCKETS *sockets
     }
 
     netdata_thread_cleanup_pop(1);
-    debug(D_POLLFD, "POLLFD: LISTENER: cleanup completed");
+    netdata_log_debug(D_POLLFD, "POLLFD: LISTENER: cleanup completed");
 }

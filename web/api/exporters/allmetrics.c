@@ -39,10 +39,10 @@ inline int web_client_api_request_v1_allmetrics(RRDHOST *host, struct web_client
         prometheus_prefix = global_exporting_prefix;
 
     while(url) {
-        char *value = mystrsep(&url, "&");
+        char *value = strsep_skip_consecutive_separators(&url, "&");
         if (!value || !*value) continue;
 
-        char *name = mystrsep(&value, "=");
+        char *name = strsep_skip_consecutive_separators(&value, "=");
         if(!name || !*name) continue;
         if(!value || !*value) continue;
 
@@ -90,17 +90,17 @@ inline int web_client_api_request_v1_allmetrics(RRDHOST *host, struct web_client
 
     switch(format) {
         case ALLMETRICS_JSON:
-            w->response.data->contenttype = CT_APPLICATION_JSON;
+            w->response.data->content_type = CT_APPLICATION_JSON;
             rrd_stats_api_v1_charts_allmetrics_json(host, filter, w->response.data);
             return HTTP_RESP_OK;
 
         case ALLMETRICS_SHELL:
-            w->response.data->contenttype = CT_TEXT_PLAIN;
+            w->response.data->content_type = CT_TEXT_PLAIN;
             rrd_stats_api_v1_charts_allmetrics_shell(host, filter, w->response.data);
             return HTTP_RESP_OK;
 
         case ALLMETRICS_PROMETHEUS:
-            w->response.data->contenttype = CT_PROMETHEUS;
+            w->response.data->content_type = CT_PROMETHEUS;
             rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(
                     host
                     , filter
@@ -113,7 +113,7 @@ inline int web_client_api_request_v1_allmetrics(RRDHOST *host, struct web_client
             return HTTP_RESP_OK;
 
         case ALLMETRICS_PROMETHEUS_ALL_HOSTS:
-            w->response.data->contenttype = CT_PROMETHEUS;
+            w->response.data->content_type = CT_PROMETHEUS;
             rrd_stats_api_v1_charts_allmetrics_prometheus_all_hosts(
                     host
                     , filter
@@ -126,7 +126,7 @@ inline int web_client_api_request_v1_allmetrics(RRDHOST *host, struct web_client
             return HTTP_RESP_OK;
 
         default:
-            w->response.data->contenttype = CT_TEXT_PLAIN;
+            w->response.data->content_type = CT_TEXT_PLAIN;
             buffer_strcat(w->response.data, "Which format? '" ALLMETRICS_FORMAT_SHELL "', '" ALLMETRICS_FORMAT_PROMETHEUS "', '" ALLMETRICS_FORMAT_PROMETHEUS_ALL_HOSTS "' and '" ALLMETRICS_FORMAT_JSON "' are currently supported.");
             return HTTP_RESP_BAD_REQUEST;
     }

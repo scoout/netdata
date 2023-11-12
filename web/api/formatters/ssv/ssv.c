@@ -2,8 +2,8 @@
 
 #include "ssv.h"
 
-void rrdr2ssv(RRDR *r, BUFFER *wb, RRDR_OPTIONS options, const char *prefix, const char *separator, const char *suffix, RRDDIM *temp_rd) {
-    //info("RRD2SSV(): %s: BEGIN", r->st->id);
+void rrdr2ssv(RRDR *r, BUFFER *wb, RRDR_OPTIONS options, const char *prefix, const char *separator, const char *suffix) {
+    //netdata_log_info("RRD2SSV(): %s: BEGIN", r->st->id);
     long i;
 
     buffer_strcat(wb, prefix);
@@ -17,15 +17,15 @@ void rrdr2ssv(RRDR *r, BUFFER *wb, RRDR_OPTIONS options, const char *prefix, con
     // for each line in the array
     for(i = start; i != end ;i += step) {
         int all_values_are_null = 0;
-        NETDATA_DOUBLE v = rrdr2value(r, i, options, &all_values_are_null, NULL, temp_rd);
+        NETDATA_DOUBLE v = rrdr2value(r, i, options, &all_values_are_null, NULL);
 
         if(likely(i != start)) {
-            if(r->min > v) r->min = v;
-            if(r->max < v) r->max = v;
+            if(r->view.min > v) r->view.min = v;
+            if(r->view.max < v) r->view.max = v;
         }
         else {
-            r->min = v;
-            r->max = v;
+            r->view.min = v;
+            r->view.max = v;
         }
 
         if(likely(i != start))
@@ -38,8 +38,8 @@ void rrdr2ssv(RRDR *r, BUFFER *wb, RRDR_OPTIONS options, const char *prefix, con
                 buffer_strcat(wb, "null");
         }
         else
-            buffer_rrd_value(wb, v);
+            buffer_print_netdata_double(wb, v);
     }
     buffer_strcat(wb, suffix);
-    //info("RRD2SSV(): %s: END", r->st->id);
+    //netdata_log_info("RRD2SSV(): %s: END", r->st->id);
 }
