@@ -1,110 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "cli.h"
 #include "daemon/pipename.h"
-
-void error_int(int is_collector __maybe_unused, const char *prefix __maybe_unused, const char *file __maybe_unused, const char *function __maybe_unused, const unsigned long line __maybe_unused, const char *fmt, ... ) {
-    FILE *fp = stderr;
-
-    va_list args;
-    va_start( args, fmt );
-    vfprintf(fp, fmt, args );
-    va_end( args );
-}
-
-#ifdef NETDATA_INTERNAL_CHECKS
-
-uint64_t debug_flags;
-
-void debug_int( const char *file __maybe_unused , const char *function __maybe_unused , const unsigned long line __maybe_unused, const char *fmt __maybe_unused, ... )
-{
-
-}
-
-void fatal_int( const char *file __maybe_unused, const char *function __maybe_unused, const unsigned long line __maybe_unused, const char *fmt __maybe_unused, ... )
-{
-    abort();
-};
-#endif
-
-#ifdef NETDATA_TRACE_ALLOCATIONS
-void *callocz_int(size_t nmemb, size_t size, const char *file __maybe_unused, const char *function __maybe_unused, size_t line __maybe_unused)
-{
-    void *p = calloc(nmemb, size);
-    if (unlikely(!p)) {
-        netdata_log_error("Cannot allocate %zu bytes of memory.", nmemb * size);
-        exit(1);
-    }
-    return p;
-}
-
-void *mallocz_int(size_t size, const char *file __maybe_unused, const char *function __maybe_unused, size_t line __maybe_unused)
-{
-    void *p = malloc(size);
-    if (unlikely(!p)) {
-        netdata_log_error("Cannot allocate %zu bytes of memory.", size);
-        exit(1);
-    }
-    return p;
-}
-
-void *reallocz_int(void *ptr, size_t size, const char *file __maybe_unused, const char *function __maybe_unused, size_t line __maybe_unused)
-{
-    void *p = realloc(ptr, size);
-    if (unlikely(!p)) {
-        netdata_log_error("Cannot allocate %zu bytes of memory.", size);
-        exit(1);
-    }
-    return p;
-}
-
-void freez_int(void *ptr, const char *file __maybe_unused, const char *function __maybe_unused, size_t line __maybe_unused)
-{
-    free(ptr);
-}
-#else
-void freez(void *ptr) {
-    free(ptr);
-}
-
-void *mallocz(size_t size) {
-    void *p = malloc(size);
-    if (unlikely(!p)) {
-        netdata_log_error("Cannot allocate %zu bytes of memory.", size);
-        exit(1);
-    }
-    return p;
-}
-
-void *callocz(size_t nmemb, size_t size) {
-    void *p = calloc(nmemb, size);
-    if (unlikely(!p)) {
-        netdata_log_error("Cannot allocate %zu bytes of memory.", nmemb * size);
-        exit(1);
-    }
-    return p;
-}
-
-void *reallocz(void *ptr, size_t size) {
-    void *p = realloc(ptr, size);
-    if (unlikely(!p)) {
-        netdata_log_error("Cannot allocate %zu bytes of memory.", size);
-        exit(1);
-    }
-    return p;
-}
-#endif
-
-int vsnprintfz(char *dst, size_t n, const char *fmt, va_list args) {
-    if(unlikely(!n)) return 0;
-
-    int size = vsnprintf(dst, n, fmt, args);
-    dst[n - 1] = '\0';
-
-    if (unlikely((size_t) size > n)) size = (int)n;
-
-    return size;
-}
+#include "daemon/common.h"
+#include "libnetdata/required_dummies.h"
 
 static uv_pipe_t client_pipe;
 static uv_write_t write_req;
@@ -136,7 +34,7 @@ static void parse_command_reply(BUFFER *buf)
          pos < response_string + response_string_size  && !syntax_error ;
          ++pos) {
         /* Skip white-space characters */
-        for ( ; isspace(*pos) && ('\0' != *pos); ++pos) {;}
+        for ( ; isspace(*pos) && ('\0' != *pos); ++pos) ;
 
         if ('\0' == *pos)
             continue;
@@ -257,6 +155,9 @@ static void connect_cb(uv_connect_t* req, int status)
 
 int main(int argc, char **argv)
 {
+    clocks_init();
+    nd_log_initialize_for_external_plugins("netdatacli");
+
     int ret, i;
     static uv_loop_t* loop;
     uv_connect_t req;

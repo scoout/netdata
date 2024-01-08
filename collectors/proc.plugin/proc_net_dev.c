@@ -11,6 +11,8 @@
 
 #define READ_RETRY_PERIOD 60 // seconds
 
+time_t double_linked_device_collect_delay_secs = 120;
+
 void cgroup_netdev_reset_all(void);
 void cgroup_netdev_release(const DICTIONARY_ITEM *link);
 const void *cgroup_netdev_dup(const DICTIONARY_ITEM *link);
@@ -98,6 +100,8 @@ static struct netdev {
     int updated;
 
     bool function_ready;
+
+    bool double_linked; // iflink != ifindex
 
     time_t discover_time;
     
@@ -610,12 +614,16 @@ static inline void netdev_rename_all_lock(void) {
 
 // ----------------------------------------------------------------------------
 
-int netdev_function_net_interfaces(BUFFER *wb, int timeout __maybe_unused, const char *function __maybe_unused,
-        void *collector_data __maybe_unused,
-        rrd_function_result_callback_t result_cb, void *result_cb_data,
-        rrd_function_is_cancelled_cb_t is_cancelled_cb, void *is_cancelled_cb_data,
-        rrd_function_register_canceller_cb_t register_canceller_cb __maybe_unused,
-        void *register_canceller_cb_data __maybe_unused) {
+int netdev_function_net_interfaces(uuid_t *transaction __maybe_unused, BUFFER *wb,
+                                   usec_t *stop_monotonic_ut __maybe_unused, const char *function __maybe_unused,
+                                   void *collector_data __maybe_unused,
+                                   rrd_function_result_callback_t result_cb, void *result_cb_data,
+                                   rrd_function_progress_cb_t progress_cb __maybe_unused, void *progress_cb_data __maybe_unused,
+                                   rrd_function_is_cancelled_cb_t is_cancelled_cb, void *is_cancelled_cb_data,
+                                   rrd_function_register_canceller_cb_t register_canceller_cb __maybe_unused,
+                                   void *register_canceller_cb_data __maybe_unused,
+                                   rrd_function_register_progresser_cb_t register_progresser_cb __maybe_unused,
+                                   void *register_progresser_cb_data __maybe_unused) {
 
     buffer_flush(wb);
     wb->content_type = CT_APPLICATION_JSON;
@@ -984,6 +992,7 @@ static struct netdev *get_netdev(const char *name) {
     d->len = strlen(d->name);
     d->chart_labels = rrdlabels_create();
     d->function_ready = false;
+    d->double_linked = false;
 
     d->chart_type_net_bytes      = strdupz("net");
     d->chart_type_net_compressed = strdupz("net_compressed");
@@ -1043,7 +1052,21 @@ static struct netdev *get_netdev(const char *name) {
     return d;
 }
 
-#define NETDEV_VIRTUAL_COLLECT_DELAY 15 // 1 full run of the cgroups discovery thread (10 secs by default)
+static bool is_iface_double_linked(struct netdev *d) {
+    char filename[FILENAME_MAX + 1];
+    unsigned long long iflink = 0;
+    unsigned long long ifindex = 0;
+
+    snprintfz(filename, FILENAME_MAX, "%s/sys/class/net/%s/iflink", netdata_configured_host_prefix, d->name);
+    if (read_single_number_file(filename, &iflink))
+        return false;
+
+    snprintfz(filename, FILENAME_MAX, "%s/sys/class/net/%s/ifindex", netdata_configured_host_prefix, d->name);
+    if (read_single_number_file(filename, &ifindex))
+        return false;
+
+    return iflink != ifindex;
+}
 
 int do_proc_net_dev(int update_every, usec_t dt) {
     (void)dt;
@@ -1148,10 +1171,10 @@ int do_proc_net_dev(int update_every, usec_t dt) {
             if(d->enabled)
                 d->enabled = !simple_pattern_matches(disabled_list, d->name);
 
-            char buffer[FILENAME_MAX + 1];
-            snprintfz(buffer, FILENAME_MAX, path_to_sys_devices_virtual_net, d->name);
+            char buf[FILENAME_MAX + 1];
+            snprintfz(buf, FILENAME_MAX, path_to_sys_devices_virtual_net, d->name);
 
-            d->virtual = likely(access(buffer, R_OK) == 0) ? 1 : 0;
+            d->virtual = likely(access(buf, R_OK) == 0) ? 1 : 0;
 
             // At least on Proxmox inside LXC: eth0 is virtual.
             // Virtual interfaces are not taken into account in system.net calculations
@@ -1167,41 +1190,71 @@ int do_proc_net_dev(int update_every, usec_t dt) {
 
             if(likely(!d->virtual)) {
                 // set the filename to get the interface speed
-                snprintfz(buffer, FILENAME_MAX, path_to_sys_class_net_speed, d->name);
-                d->filename_speed = strdupz(buffer);
+                snprintfz(buf, FILENAME_MAX, path_to_sys_class_net_speed, d->name);
+                d->filename_speed = strdupz(buf);
 
-                snprintfz(buffer, FILENAME_MAX, path_to_sys_class_net_duplex, d->name);
-                d->filename_duplex = strdupz(buffer);
+                snprintfz(buf, FILENAME_MAX, path_to_sys_class_net_duplex, d->name);
+                d->filename_duplex = strdupz(buf);
             }
 
-            snprintfz(buffer, FILENAME_MAX, path_to_sys_class_net_operstate, d->name);
-            d->filename_operstate = strdupz(buffer);
+            snprintfz(buf, FILENAME_MAX, path_to_sys_class_net_operstate, d->name);
+            d->filename_operstate = strdupz(buf);
 
-            snprintfz(buffer, FILENAME_MAX, path_to_sys_class_net_carrier, d->name);
-            d->filename_carrier = strdupz(buffer);
+            snprintfz(buf, FILENAME_MAX, path_to_sys_class_net_carrier, d->name);
+            d->filename_carrier = strdupz(buf);
 
-            snprintfz(buffer, FILENAME_MAX, path_to_sys_class_net_mtu, d->name);
-            d->filename_mtu = strdupz(buffer);
+            snprintfz(buf, FILENAME_MAX, path_to_sys_class_net_mtu, d->name);
+            d->filename_mtu = strdupz(buf);
 
-            snprintfz(buffer, FILENAME_MAX, "plugin:proc:/proc/net/dev:%s", d->name);
-            d->enabled = config_get_boolean_ondemand(buffer, "enabled", d->enabled);
-            d->virtual = config_get_boolean(buffer, "virtual", d->virtual);
+            snprintfz(buf, FILENAME_MAX, "plugin:proc:/proc/net/dev:%s", d->name);
+
+            if (config_exists(buf, "enabled"))
+                d->enabled = config_get_boolean_ondemand(buf, "enabled", d->enabled);
+            if (config_exists(buf, "virtual"))
+                d->virtual = config_get_boolean(buf, "virtual", d->virtual);
 
             if(d->enabled == CONFIG_BOOLEAN_NO)
                 continue;
 
-            d->do_bandwidth  = config_get_boolean_ondemand(buffer, "bandwidth",  do_bandwidth);
-            d->do_packets    = config_get_boolean_ondemand(buffer, "packets",    do_packets);
-            d->do_errors     = config_get_boolean_ondemand(buffer, "errors",     do_errors);
-            d->do_drops      = config_get_boolean_ondemand(buffer, "drops",      do_drops);
-            d->do_fifo       = config_get_boolean_ondemand(buffer, "fifo",       do_fifo);
-            d->do_compressed = config_get_boolean_ondemand(buffer, "compressed", do_compressed);
-            d->do_events     = config_get_boolean_ondemand(buffer, "events",     do_events);
-            d->do_speed      = config_get_boolean_ondemand(buffer, "speed",      do_speed);
-            d->do_duplex     = config_get_boolean_ondemand(buffer, "duplex",     do_duplex);
-            d->do_operstate  = config_get_boolean_ondemand(buffer, "operstate",  do_operstate);
-            d->do_carrier    = config_get_boolean_ondemand(buffer, "carrier",    do_carrier);
-            d->do_mtu        = config_get_boolean_ondemand(buffer, "mtu",        do_mtu);
+            d->double_linked = is_iface_double_linked(d);
+
+            d->do_bandwidth = do_bandwidth;
+            d->do_packets = do_packets;
+            d->do_errors = do_errors;
+            d->do_drops = do_drops;
+            d->do_fifo = do_fifo;
+            d->do_compressed = do_compressed;
+            d->do_events = do_events;
+            d->do_speed = do_speed;
+            d->do_duplex = do_duplex;
+            d->do_operstate = do_operstate;
+            d->do_carrier = do_carrier;
+            d->do_mtu = do_mtu;
+
+            if (config_exists(buf, "bandwidth"))
+                d->do_bandwidth = config_get_boolean_ondemand(buf, "bandwidth", do_bandwidth);
+            if (config_exists(buf, "packets"))
+                d->do_packets = config_get_boolean_ondemand(buf, "packets", do_packets);
+            if (config_exists(buf, "errors"))
+                d->do_errors = config_get_boolean_ondemand(buf, "errors", do_errors);
+            if (config_exists(buf, "drops"))
+                d->do_drops = config_get_boolean_ondemand(buf, "drops", do_drops);
+            if (config_exists(buf, "fifo"))
+                d->do_fifo = config_get_boolean_ondemand(buf, "fifo", do_fifo);
+            if (config_exists(buf, "compressed"))
+                d->do_compressed = config_get_boolean_ondemand(buf, "compressed", do_compressed);
+            if (config_exists(buf, "events"))
+                d->do_events = config_get_boolean_ondemand(buf, "events", do_events);
+            if (config_exists(buf, "speed"))
+                d->do_speed = config_get_boolean_ondemand(buf, "speed", do_speed);
+            if (config_exists(buf, "duplex"))
+                d->do_duplex = config_get_boolean_ondemand(buf, "duplex", do_duplex);
+            if (config_exists(buf, "operstate"))
+                d->do_operstate = config_get_boolean_ondemand(buf, "operstate", do_operstate);
+            if (config_exists(buf, "carrier"))
+                d->do_carrier = config_get_boolean_ondemand(buf, "carrier", do_carrier);
+            if (config_exists(buf, "mtu"))
+                d->do_mtu = config_get_boolean_ondemand(buf, "mtu", do_mtu);
         }
 
         if(unlikely(!d->enabled))
@@ -1211,7 +1264,7 @@ int do_proc_net_dev(int update_every, usec_t dt) {
         // This is necessary to prevent the creation of charts for virtual interfaces that will later be 
         // recreated as container interfaces (create container) or
         // rediscovered and recreated only to be deleted almost immediately (stop/remove container)
-        if (d->virtual && (now - d->discover_time < NETDEV_VIRTUAL_COLLECT_DELAY)) {
+        if (d->double_linked && d->virtual && (now - d->discover_time < double_linked_device_collect_delay_secs)) {
             continue;
         }
 
@@ -1896,32 +1949,37 @@ void *netdev_main(void *ptr)
     worker_register("NETDEV");
     worker_register_job_name(0, "netdev");
 
-    netdata_thread_cleanup_push(netdev_main_cleanup, ptr);
-
-    rrd_collector_started();
-    rrd_function_add(localhost, NULL, "network-interfaces", 10, RRDFUNCTIONS_NETDEV_HELP, true, netdev_function_net_interfaces, NULL);
-
-    usec_t step = localhost->rrd_update_every * USEC_PER_SEC;
-    heartbeat_t hb;
-    heartbeat_init(&hb);
-
-    while (service_running(SERVICE_COLLECTORS)) {
-        worker_is_idle();
-        usec_t hb_dt = heartbeat_next(&hb, step);
-
-        if (unlikely(!service_running(SERVICE_COLLECTORS)))
-            break;
-
-        cgroup_netdev_reset_all();
-
-        worker_is_busy(0);
-
-        netdata_mutex_lock(&netdev_dev_mutex);
-        if(do_proc_net_dev(localhost->rrd_update_every, hb_dt))
-            break;
-        netdata_mutex_unlock(&netdev_dev_mutex);
+    if (getenv("KUBERNETES_SERVICE_HOST") != NULL && getenv("KUBERNETES_SERVICE_PORT") != NULL) {
+        double_linked_device_collect_delay_secs = 300;
     }
 
+    netdata_thread_cleanup_push(netdev_main_cleanup, ptr) {
+        rrd_collector_started();
+        rrd_function_add(localhost, NULL, "network-interfaces", 10, RRDFUNCTIONS_PRIORITY_DEFAULT, RRDFUNCTIONS_NETDEV_HELP,
+                         "top", HTTP_ACCESS_ANY,
+                         true, netdev_function_net_interfaces, NULL);
+
+        usec_t step = localhost->rrd_update_every * USEC_PER_SEC;
+        heartbeat_t hb;
+        heartbeat_init(&hb);
+
+        while (service_running(SERVICE_COLLECTORS)) {
+            worker_is_idle();
+            usec_t hb_dt = heartbeat_next(&hb, step);
+
+            if (unlikely(!service_running(SERVICE_COLLECTORS)))
+                break;
+
+            cgroup_netdev_reset_all();
+
+            worker_is_busy(0);
+
+            netdata_mutex_lock(&netdev_dev_mutex);
+            if (do_proc_net_dev(localhost->rrd_update_every, hb_dt))
+                break;
+            netdata_mutex_unlock(&netdev_dev_mutex);
+        }
+    }
     netdata_thread_cleanup_pop(1);
 
     return NULL;

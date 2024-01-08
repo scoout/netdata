@@ -251,9 +251,11 @@
             -v netdatacache:/var/cache/netdata \
             -v /etc/passwd:/host/etc/passwd:ro \
             -v /etc/group:/host/etc/group:ro \
+            -v /etc/localtime:/etc/localtime:ro \
             -v /proc:/host/proc:ro \
             -v /sys:/host/sys:ro \
             -v /etc/os-release:/host/etc/os-release:ro \
+            -v /var/log:/host/var/log:ro \
             -v /var/run/docker.sock:/var/run/docker.sock:ro \
             --restart unless-stopped \
             --cap-add SYS_PTRACE \
@@ -275,9 +277,11 @@
             -v netdatacache:/var/cache/netdata \
             -v /etc/passwd:/host/etc/passwd:ro \
             -v /etc/group:/host/etc/group:ro \
+            -v /etc/localtime:/etc/localtime:ro \
             -v /proc:/host/proc:ro \
             -v /sys:/host/sys:ro \
             -v /etc/os-release:/host/etc/os-release:ro \
+            -v /var/log:/host/var/log:ro \
             -v /var/run/docker.sock:/var/run/docker.sock:ro \
             --restart unless-stopped \
             --cap-add SYS_PTRACE \
@@ -312,9 +316,11 @@
                   - netdatacache:/var/cache/netdata
                   - /etc/passwd:/host/etc/passwd:ro
                   - /etc/group:/host/etc/group:ro
+                  - /etc/localtime:/etc/localtime:ro
                   - /proc:/host/proc:ro
                   - /sys:/host/sys:ro
                   - /etc/os-release:/host/etc/os-release:ro
+                  - /var/log:/host/var/log:ro
                   - /var/run/docker.sock:/var/run/docker.sock:ro
             {% if $showClaimingOptions %}
                 environment:
@@ -347,9 +353,11 @@
                   - netdatacache:/var/cache/netdata
                   - /etc/passwd:/host/etc/passwd:ro
                   - /etc/group:/host/etc/group:ro
+                  - /etc/localtime:/etc/localtime:ro
                   - /proc:/host/proc:ro
                   - /sys:/host/sys:ro
                   - /etc/os-release:/host/etc/os-release:ro
+                  - /var/log:/host/var/log:ro
                   - /var/run/docker.sock:/var/run/docker.sock:ro
             {% if $showClaimingOptions %}
                 environment:
@@ -382,10 +390,12 @@
                   - netdatacache:/var/cache/netdata
                   - /etc/passwd:/host/etc/passwd:ro
                   - /etc/group:/host/etc/group:ro
+                  - /etc/localtime:/etc/localtime:ro
                   - /proc:/host/proc:ro
                   - /sys:/host/sys:ro
                   - /etc/os-release:/host/etc/os-release:ro
                   - /etc/hostname:/etc/hostname:ro
+                  - /var/log:/host/var/log:ro
                   - /var/run/docker.sock:/var/run/docker.sock:ro
             {% if $showClaimingOptions %}
                 environment:
@@ -420,10 +430,12 @@
                   - netdatacache:/var/cache/netdata
                   - /etc/passwd:/host/etc/passwd:ro
                   - /etc/group:/host/etc/group:ro
+                  - /etc/localtime:/etc/localtime:ro
                   - /proc:/host/proc:ro
                   - /sys:/host/sys:ro
                   - /etc/os-release:/host/etc/os-release:ro
                   - /etc/hostname:/etc/hostname:ro
+                  - /var/log:/host/var/log:ro
                   - /var/run/docker.sock:/var/run/docker.sock:ro
             {% if $showClaimingOptions %}
                 environment:

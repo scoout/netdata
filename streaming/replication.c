@@ -352,8 +352,8 @@ static bool replication_query_execute(BUFFER *wb, struct replication_query *q, s
             if(max_skip <= 0) {
                 d->skip = true;
 
-                error_limit_static_global_var(erl, 1, 0);
-                error_limit(&erl,
+                nd_log_limit_static_global_var(erl, 1, 0);
+                nd_log_limit(&erl, NDLS_DAEMON, NDLP_ERR,
                             "STREAM_SENDER REPLAY ERROR: 'host:%s/chart:%s/dim:%s': db does not advance the query "
                             "beyond time %llu (tried 1000 times to get the next point and always got back a point in the past)",
                             rrdhost_hostname(q->st->rrdhost), rrdset_id(q->st), rrddim_id(d->rd),
@@ -402,14 +402,15 @@ static bool replication_query_execute(BUFFER *wb, struct replication_query *q, s
                 fix_min_start_time = min_end_time - min_update_every;
 
 #ifdef NETDATA_INTERNAL_CHECKS
-            error_limit_static_global_var(erl, 1, 0);
-            error_limit(&erl, "REPLAY WARNING: 'host:%s/chart:%s' "
-                              "misaligned dimensions, "
-                              "update every (min: %ld, max: %ld), "
-                              "start time (min: %ld, max: %ld), "
-                              "end time (min %ld, max %ld), "
-                              "now %ld, last end time sent %ld, "
-                              "min start time is fixed to %ld",
+            nd_log_limit_static_global_var(erl, 1, 0);
+            nd_log_limit(&erl,  NDLS_DAEMON, NDLP_WARNING,
+                         "REPLAY WARNING: 'host:%s/chart:%s' "
+                         "misaligned dimensions, "
+                         "update every (min: %ld, max: %ld), "
+                         "start time (min: %ld, max: %ld), "
+                         "end time (min %ld, max %ld), "
+                         "now %ld, last end time sent %ld, "
+                         "min start time is fixed to %ld",
                         rrdhost_hostname(q->st->rrdhost), rrdset_id(q->st),
                         min_update_every, max_update_every,
                         min_start_time, max_start_time,
@@ -757,8 +758,8 @@ static void replicate_log_request(struct replication_request_details *r, const c
 #ifdef NETDATA_INTERNAL_CHECKS
     internal_error(true,
 #else
-    error_limit_static_global_var(erl, 1, 0);
-    error_limit(&erl,
+    nd_log_limit_static_global_var(erl, 1, 0);
+    nd_log_limit(&erl, NDLS_DAEMON, NDLP_ERR,
 #endif
                 "REPLAY ERROR: 'host:%s/chart:%s' child sent: "
                 "db from %ld to %ld%s, wall clock time %ld, "
@@ -821,7 +822,7 @@ static bool send_replay_chart_cmd(struct replication_request_details *r, const c
 #endif // NETDATA_LOG_REPLICATION_REQUESTS
 
     char buffer[2048 + 1];
-    snprintfz(buffer, 2048, PLUGINSD_KEYWORD_REPLAY_CHART " \"%s\" \"%s\" %llu %llu\n",
+    snprintfz(buffer, sizeof(buffer) - 1, PLUGINSD_KEYWORD_REPLAY_CHART " \"%s\" \"%s\" %llu %llu\n",
               rrdset_id(st), r->wanted.start_streaming ? "true" : "false",
               (unsigned long long)r->wanted.after, (unsigned long long)r->wanted.before);
 
@@ -1425,7 +1426,7 @@ static void replication_request_delete_callback(const DICTIONARY_ITEM *item __ma
 
 static bool sender_is_still_connected_for_this_request(struct replication_request *rq) {
     return rq->sender_last_flush_ut == rrdpush_sender_get_flush_time(rq->sender);
-};
+}
 
 static bool replication_execute_request(struct replication_request *rq, bool workers) {
     bool ret = false;
@@ -1837,17 +1838,16 @@ static void replication_worker_cleanup(void *ptr __maybe_unused) {
 static void *replication_worker_thread(void *ptr) {
     replication_initialize_workers(false);
 
-    netdata_thread_cleanup_push(replication_worker_cleanup, ptr);
-
-    while(service_running(SERVICE_REPLICATION)) {
-        if(unlikely(replication_pipeline_execute_next() == REQUEST_QUEUE_EMPTY)) {
-            sender_thread_buffer_free();
-            worker_is_busy(WORKER_JOB_WAIT);
-            worker_is_idle();
-            sleep_usec(1 * USEC_PER_SEC);
+    netdata_thread_cleanup_push(replication_worker_cleanup, ptr) {
+        while (service_running(SERVICE_REPLICATION)) {
+            if (unlikely(replication_pipeline_execute_next() == REQUEST_QUEUE_EMPTY)) {
+                sender_thread_buffer_free();
+                worker_is_busy(WORKER_JOB_WAIT);
+                worker_is_idle();
+                sleep_usec(1 * USEC_PER_SEC);
+            }
         }
     }
-
     netdata_thread_cleanup_pop(1);
     return NULL;
 }

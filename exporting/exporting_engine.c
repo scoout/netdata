@@ -51,7 +51,7 @@ void analytics_exporting_connectors(BUFFER *b)
                 buffer_strcat(b, "OpenTSDBHTTP");
                 break;
             case EXPORTING_CONNECTOR_TYPE_PROMETHEUS_REMOTE_WRITE:
-#if ENABLE_PROMETHEUS_REMOTE_WRITE
+#ifdef ENABLE_PROMETHEUS_REMOTE_WRITE
                 buffer_strcat(b, "PrometheusRemoteWrite");
 #endif
                 break;
@@ -66,7 +66,7 @@ void analytics_exporting_connectors(BUFFER *b)
 #endif
                 break;
             case EXPORTING_CONNECTOR_TYPE_MONGODB:
-#if HAVE_MONGOC
+#ifdef HAVE_MONGOC
                 buffer_strcat(b, "MongoDB");
 #endif
                 break;
@@ -95,7 +95,7 @@ static void exporting_clean_engine()
         aws_sdk_shutdown();
 #endif
 
-#if ENABLE_PROMETHEUS_REMOTE_WRITE
+#ifdef ENABLE_PROMETHEUS_REMOTE_WRITE
     if (engine->protocol_buffers_initialized)
         protocol_buffers_shutdown();
 #endif
@@ -184,7 +184,9 @@ void *exporting_main(void *ptr)
 
     if (init_connectors(engine) != 0) {
         netdata_log_error("EXPORTING: cannot initialize exporting connectors");
-        send_statistics("EXPORTING_START", "FAIL", "-");
+
+        analytics_statistic_t statistic = { "EXPORTING_START", "FAIL", "-" };
+        analytics_statistic_send(&statistic);
         goto cleanup;
     }
 

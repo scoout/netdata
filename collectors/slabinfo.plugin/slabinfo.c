@@ -11,10 +11,13 @@
 #define CHART_PRIO 3000
 
 // #define slabdebug(...) if (debug) { fprintf(stderr, __VA_ARGS__); }
-#define slabdebug(args...) if (debug) { \
-    fprintf(stderr, "slabinfo.plugin DEBUG (%04d@%-10.10s:%-15.15s)::", __LINE__, __FILE__, __FUNCTION__); \
-    fprintf(stderr, ##args); \
-    fprintf(stderr, "\n"); }
+#define slabdebug(args...) do {     \
+    if (debug) {                    \
+        fprintf(stderr, "slabinfo.plugin DEBUG (%04d@%-10.10s:%-15.15s)::", __LINE__, __FILE__, __FUNCTION__); \
+        fprintf(stderr, ##args);    \
+        fprintf(stderr, "\n");      \
+    }                               \
+} while(0)
 
 int running = 1;
 int debug = 0;
@@ -336,14 +339,11 @@ void usage(void) {
 }
 
 int main(int argc, char **argv) {
-    stderror = stderr;
     clocks_init();
+    nd_log_initialize_for_external_plugins("slabinfo.plugin");
 
     program_name = argv[0];
     program_version = "0.1";
-    error_log_syslog = 0;
-
-    log_set_global_severity_for_external_plugins();
 
     int update_every = 1, i, n, freq = 0;
 

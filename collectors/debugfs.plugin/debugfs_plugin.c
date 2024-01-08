@@ -28,7 +28,7 @@ static struct debugfs_module {
     { .name = NULL, .enabled = CONFIG_BOOLEAN_NO, .func = NULL}
 };
 
-#ifdef HAVE_CAPABILITY
+#ifdef HAVE_SYS_CAPABILITY_H
 static int debugfs_check_capabilities()
 {
     cap_t caps = cap_get_proc();
@@ -159,16 +159,8 @@ static void debugfs_parse_args(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    // debug_flags = D_PROCFILE;
-    stderror = stderr;
-
-    // set the name for logging
-    program_name = "debugfs.plugin";
-
-    // disable syslog for debugfs.plugin
-    error_log_syslog = 0;
-
-    log_set_global_severity_for_external_plugins();
+    clocks_init();
+    nd_log_initialize_for_external_plugins("debugfs.plugin");
 
     netdata_configured_host_prefix = getenv("NETDATA_HOST_PREFIX");
     if (verify_netdata_host_prefix() == -1)
@@ -190,7 +182,7 @@ int main(int argc, char **argv)
     // FIXME: remove debugfs_check_sys_permission() after https://github.com/netdata/netdata/issues/15048 is fixed
     if (!debugfs_check_capabilities() && !debugfs_am_i_running_as_root() && !debugfs_check_sys_permission()) {
         uid_t uid = getuid(), euid = geteuid();
-#ifdef HAVE_CAPABILITY
+#ifdef HAVE_SYS_CAPABILITY_H
         netdata_log_error(
             "debugfs.plugin should either run as root (now running with uid %u, euid %u) or have special capabilities. "
             "Without these, debugfs.plugin cannot access /sys/kernel/debug. "
@@ -241,6 +233,13 @@ int main(int argc, char **argv)
         }
         if (!enabled) {
             netdata_log_info("all modules are disabled, exiting...");
+            return 1;
+        }
+
+        fprintf(stdout, "\n");
+        fflush(stdout);
+        if (ferror(stdout) && errno == EPIPE) {
+            netdata_log_error("error writing to stdout: EPIPE. Exiting...");
             return 1;
         }
     }

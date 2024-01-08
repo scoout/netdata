@@ -1723,7 +1723,7 @@ static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr, QUERY_ENGINE_
                             case TIER_QUERY_FETCH_SUM:
                                 new_point.value = sp.sum;
                                 break;
-                        };
+                        }
                     }
                 }
                 else
@@ -3468,6 +3468,8 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
 
     internal_fatal(released_ops, "QUERY: released_ops should be NULL when the query starts");
 
+    query_progress_set_finish_line(qt->request.transaction, qt->query.used);
+
     QUERY_ENGINE_OPS **ops = NULL;
     if(qt->query.used)
         ops = onewayalloc_callocz(owa, qt->query.used, sizeof(QUERY_ENGINE_OPS *));
@@ -3617,12 +3619,12 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
         bool cancel = false;
         if (qt->request.interrupt_callback && qt->request.interrupt_callback(qt->request.interrupt_callback_data)) {
             cancel = true;
-            netdata_log_access("QUERY INTERRUPTED");
+            nd_log(NDLS_ACCESS, NDLP_NOTICE, "QUERY INTERRUPTED");
         }
 
         if (qt->request.timeout_ms && ((NETDATA_DOUBLE)(now_ut - qt->timings.received_ut) / 1000.0) > (NETDATA_DOUBLE)qt->request.timeout_ms) {
             cancel = true;
-            netdata_log_access("QUERY CANCELED RUNTIME EXCEEDED %0.2f ms (LIMIT %lld ms)",
+            nd_log(NDLS_ACCESS, NDLP_WARNING, "QUERY CANCELED RUNTIME EXCEEDED %0.2f ms (LIMIT %lld ms)",
                        (NETDATA_DOUBLE)(now_ut - qt->timings.received_ut) / 1000.0, (long long)qt->request.timeout_ms);
         }
 
@@ -3639,6 +3641,8 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
 
             break;
         }
+        else
+            query_progress_done_step(qt->request.transaction, 1);
     }
 
     // free all resources used by the grouping method

@@ -167,6 +167,9 @@ struct function_v2_entry {
     size_t used;
     size_t *node_ids;
     STRING *help;
+    STRING *tags;
+    HTTP_ACCESS access;
+    int priority;
 };
 
 struct context_v2_entry {
@@ -507,7 +510,7 @@ static bool rrdcontext_matches_alert(struct rrdcontext_to_json_v2_data *ctl, RRD
 
                 if (ctl->options & (CONTEXT_V2_OPTION_ALERTS_WITH_INSTANCES | CONTEXT_V2_OPTION_ALERTS_WITH_VALUES)) {
                     char key[20 + 1];
-                    snprintfz(key, 20, "%p", rcl);
+                    snprintfz(key, sizeof(key) - 1, "%p", rcl);
 
                     struct sql_alert_instance_v2_entry z = {
                             .ati = ati,
@@ -616,10 +619,10 @@ static void rrdhost_receiver_to_json(BUFFER *wb, RRDHOST_STATUS *s, const char *
                 buffer_json_member_add_object(wb, "source");
                 {
                     char buf[1024 + 1];
-                    snprintfz(buf, 1024, "[%s]:%d%s", s->ingest.peers.local.ip, s->ingest.peers.local.port, s->ingest.ssl ? ":SSL" : "");
+                    snprintfz(buf, sizeof(buf) - 1, "[%s]:%d%s", s->ingest.peers.local.ip, s->ingest.peers.local.port, s->ingest.ssl ? ":SSL" : "");
                     buffer_json_member_add_string(wb, "local", buf);
 
-                    snprintfz(buf, 1024, "[%s]:%d%s", s->ingest.peers.peer.ip, s->ingest.peers.peer.port, s->ingest.ssl ? ":SSL" : "");
+                    snprintfz(buf, sizeof(buf) - 1, "[%s]:%d%s", s->ingest.peers.peer.ip, s->ingest.peers.peer.port, s->ingest.ssl ? ":SSL" : "");
                     buffer_json_member_add_string(wb, "remote", buf);
 
                     stream_capabilities_to_json_array(wb, s->ingest.capabilities, "capabilities");
@@ -659,10 +662,10 @@ static void rrdhost_sender_to_json(BUFFER *wb, RRDHOST_STATUS *s, const char *ke
         buffer_json_member_add_object(wb, "destination");
         {
             char buf[1024 + 1];
-            snprintfz(buf, 1024, "[%s]:%d%s", s->stream.peers.local.ip, s->stream.peers.local.port, s->stream.ssl ? ":SSL" : "");
+            snprintfz(buf, sizeof(buf) - 1, "[%s]:%d%s", s->stream.peers.local.ip, s->stream.peers.local.port, s->stream.ssl ? ":SSL" : "");
             buffer_json_member_add_string(wb, "local", buf);
 
-            snprintfz(buf, 1024, "[%s]:%d%s", s->stream.peers.peer.ip, s->stream.peers.peer.port, s->stream.ssl ? ":SSL" : "");
+            snprintfz(buf, sizeof(buf) - 1, "[%s]:%d%s", s->stream.peers.peer.ip, s->stream.peers.peer.port, s->stream.ssl ? ":SSL" : "");
             buffer_json_member_add_string(wb, "remote", buf);
 
             stream_capabilities_to_json_array(wb, s->stream.capabilities, "capabilities");
@@ -686,7 +689,7 @@ static void rrdhost_sender_to_json(BUFFER *wb, RRDHOST_STATUS *s, const char *ke
                 {
 
                     if (d->ssl) {
-                        snprintfz(buf, 1024, "%s:SSL", string2str(d->destination));
+                        snprintfz(buf, sizeof(buf) - 1, "%s:SSL", string2str(d->destination));
                         buffer_json_member_add_string(wb, "destination", buf);
                     }
                     else
@@ -913,8 +916,11 @@ static ssize_t rrdcontext_to_json_v2_add_host(void *data, RRDHOST *host, bool qu
                 .size = 1,
                 .node_ids = &ctl->nodes.ni,
                 .help = NULL,
+                .tags = NULL,
+                .access = HTTP_ACCESS_MEMBERS,
+                .priority = RRDFUNCTIONS_PRIORITY_DEFAULT,
         };
-        host_functions_to_dict(host, ctl->functions.dict, &t, sizeof(t), &t.help);
+        host_functions_to_dict(host, ctl->functions.dict, &t, sizeof(t), &t.help, &t.tags, &t.access, &t.priority);
     }
 
     if(ctl->mode & CONTEXTS_V2_NODES) {
@@ -2062,12 +2068,19 @@ int rrdcontext_to_json_v2(BUFFER *wb, struct api_v2_contexts_request *req, CONTE
                 struct function_v2_entry *t;
                 dfe_start_read(ctl.functions.dict, t) {
                     buffer_json_add_array_item_object(wb);
-                    buffer_json_member_add_string(wb, "name", t_dfe.name);
-                    buffer_json_member_add_string(wb, "help", string2str(t->help));
-                    buffer_json_member_add_array(wb, "ni");
-                    for (size_t i = 0; i < t->used; i++)
-                        buffer_json_add_array_item_uint64(wb, t->node_ids[i]);
-                    buffer_json_array_close(wb);
+                    {
+                        buffer_json_member_add_string(wb, "name", t_dfe.name);
+                        buffer_json_member_add_string(wb, "help", string2str(t->help));
+                        buffer_json_member_add_array(wb, "ni");
+                        {
+                            for (size_t i = 0; i < t->used; i++)
+                                buffer_json_add_array_item_uint64(wb, t->node_ids[i]);
+                        }
+                        buffer_json_array_close(wb);
+                        buffer_json_member_add_string(wb, "tags", string2str(t->tags));
+                        buffer_json_member_add_string(wb, "access", http_id2access(t->access));
+                        buffer_json_member_add_uint64(wb, "priority", t->priority);
+                    }
                     buffer_json_object_close(wb);
                 }
                 dfe_done(t);

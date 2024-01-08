@@ -10,8 +10,6 @@
 #include "h2o/memory.h"
 #endif
 
-#define WEB_DATA_LENGTH_INCREASE_STEP 1024
-
 #define BUFFER_JSON_MAX_DEPTH 32 // max is 255
 
 extern const char hex_digits[16];
@@ -72,6 +70,7 @@ typedef enum __attribute__ ((__packed__)) {
     BUFFER_JSON_OPTIONS_DEFAULT = 0,
     BUFFER_JSON_OPTIONS_MINIFY = (1 << 0),
     BUFFER_JSON_OPTIONS_NEWLINE_ON_ARRAY_ITEMS = (1 << 1),
+    BUFFER_JSON_OPTIONS_NON_ANONYMOUS = (1 << 2),
 } BUFFER_JSON_OPTIONS;
 
 typedef struct web_buffer {
@@ -93,6 +92,8 @@ typedef struct web_buffer {
     } json;
 } BUFFER;
 
+#define CLEAN_BUFFER _cleanup_(buffer_freep) BUFFER
+
 #define buffer_cacheable(wb)    do { (wb)->options |= WB_CONTENT_CACHEABLE;    if((wb)->options & WB_CONTENT_NO_CACHEABLE) (wb)->options &= ~WB_CONTENT_NO_CACHEABLE; } while(0)
 #define buffer_no_cacheable(wb) do { (wb)->options |= WB_CONTENT_NO_CACHEABLE; if((wb)->options & WB_CONTENT_CACHEABLE)    (wb)->options &= ~WB_CONTENT_CACHEABLE;  (wb)->expires = 0; } while(0)
 
@@ -106,7 +107,7 @@ typedef struct web_buffer {
 #define buffer_overflow_check(b)
 #endif
 
-static inline void _buffer_overflow_check(BUFFER *b) {
+static inline void _buffer_overflow_check(BUFFER *b __maybe_unused) {
     assert(b->len <= b->size &&
                    "BUFFER: length is above buffer size.");
 
@@ -133,6 +134,10 @@ void buffer_jsdate(BUFFER *wb, int year, int month, int day, int hours, int minu
 BUFFER *buffer_create(size_t size, size_t *statistics);
 void buffer_free(BUFFER *b);
 void buffer_increase(BUFFER *b, size_t free_size_required);
+
+static inline void buffer_freep(BUFFER **bp) {
+    if(bp) buffer_free(*bp);
+}
 
 void buffer_snprintf(BUFFER *wb, size_t len, const char *fmt, ...) PRINTFLIKE(3, 4);
 void buffer_vsprintf(BUFFER *wb, const char *fmt, va_list args);
@@ -209,6 +214,13 @@ static inline void buffer_fast_rawcat(BUFFER *wb, const char *txt, size_t len) {
     buffer_overflow_check(wb);
 }
 
+static inline void buffer_putc(BUFFER *wb, char c) {
+    buffer_need_bytes(wb, 2);
+    wb->buffer[wb->len++] = c;
+    wb->buffer[wb->len] = '\0';
+    buffer_overflow_check(wb);
+}
+
 static inline void buffer_fast_strcat(BUFFER *wb, const char *txt, size_t len) {
     if(unlikely(!txt || !*txt || !len)) return;
 
@@ -277,6 +289,19 @@ static inline void buffer_strncat(BUFFER *wb, const char *txt, size_t len) {
     memcpy(&wb->buffer[wb->len], txt, len);
 
     wb->len += len;
+    wb->buffer[wb->len] = '\0';
+
+    buffer_overflow_check(wb);
+}
+
+static inline void buffer_memcat(BUFFER *wb, const void *mem, size_t bytes) {
+    if(unlikely(!mem)) return;
+
+    buffer_need_bytes(wb, bytes + 1);
+
+    memcpy(&wb->buffer[wb->len], mem, bytes);
+
+    wb->len += bytes;
     wb->buffer[wb->len] = '\0';
 
     buffer_overflow_check(wb);
@@ -809,8 +834,13 @@ static inline void buffer_json_member_add_boolean(BUFFER *wb, const char *key, b
 
 static inline void buffer_json_member_add_array(BUFFER *wb, const char *key) {
     buffer_print_json_comma_newline_spacing(wb);
-    buffer_print_json_key(wb, key);
-    buffer_fast_strcat(wb, ":[", 2);
+    if (key) {
+        buffer_print_json_key(wb, key);
+        buffer_fast_strcat(wb, ":[", 2);
+    }
+    else
+        buffer_fast_strcat(wb, "[", 1);
+
     wb->json.stack[wb->json.depth].count++;
 
     _buffer_json_depth_push(wb, BUFFER_JSON_ARRAY);
@@ -837,6 +867,26 @@ static inline void buffer_json_add_array_item_string(BUFFER *wb, const char *val
 
     buffer_json_add_string_value(wb, value);
     wb->json.stack[wb->json.depth].count++;
+}
+
+static inline void buffer_json_add_array_item_uuid(BUFFER *wb, uuid_t *value) {
+    if(value && !uuid_is_null(*value)) {
+        char uuid[GUID_LEN + 1];
+        uuid_unparse_lower(*value, uuid);
+        buffer_json_add_array_item_string(wb, uuid);
+    }
+    else
+        buffer_json_add_array_item_string(wb, NULL);
+}
+
+static inline void buffer_json_add_array_item_uuid_compact(BUFFER *wb, uuid_t *value) {
+    if(value && !uuid_is_null(*value)) {
+        char uuid[GUID_LEN + 1];
+        uuid_unparse_lower_compact(*value, uuid);
+        buffer_json_add_array_item_string(wb, uuid);
+    }
+    else
+        buffer_json_add_array_item_string(wb, NULL);
 }
 
 static inline void buffer_json_add_array_item_double(BUFFER *wb, NETDATA_DOUBLE value) {

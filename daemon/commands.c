@@ -142,10 +142,10 @@ static cmd_status_t cmd_reload_health_execute(char *args, char **message)
     (void)args;
     (void)message;
 
-    error_log_limit_unlimited();
+    nd_log_limits_unlimited();
     netdata_log_info("COMMAND: Reloading HEALTH configuration.");
     health_reload();
-    error_log_limit_reset();
+    nd_log_limits_reset();
 
     return CMD_STATUS_SUCCESS;
 }
@@ -155,11 +155,11 @@ static cmd_status_t cmd_save_database_execute(char *args, char **message)
     (void)args;
     (void)message;
 
-    error_log_limit_unlimited();
+    nd_log_limits_unlimited();
     netdata_log_info("COMMAND: Saving databases.");
     rrdhost_save_all();
     netdata_log_info("COMMAND: Databases saved.");
-    error_log_limit_reset();
+    nd_log_limits_reset();
 
     return CMD_STATUS_SUCCESS;
 }
@@ -169,10 +169,9 @@ static cmd_status_t cmd_reopen_logs_execute(char *args, char **message)
     (void)args;
     (void)message;
 
-    error_log_limit_unlimited();
-    netdata_log_info("COMMAND: Reopening all log files.");
-    reopen_all_log_files();
-    error_log_limit_reset();
+    nd_log_limits_unlimited();
+    nd_log_reopen_log_files();
+    nd_log_limits_reset();
 
     return CMD_STATUS_SUCCESS;
 }
@@ -182,9 +181,9 @@ static cmd_status_t cmd_exit_execute(char *args, char **message)
     (void)args;
     (void)message;
 
-    error_log_limit_unlimited();
+    nd_log_limits_unlimited();
     netdata_log_info("COMMAND: Cleaning up to exit.");
-    netdata_cleanup_and_exit(0);
+    netdata_cleanup_and_exit(0, NULL, NULL, NULL);
     exit(0);
 
     return CMD_STATUS_SUCCESS;
@@ -500,15 +499,15 @@ static void parse_commands(struct command_context *cmd_ctx)
     status = CMD_STATUS_FAILURE;
 
     /* Skip white-space characters */
-    for (pos = cmd_ctx->command_string ; isspace(*pos) && ('\0' != *pos) ; ++pos) {;}
+    for (pos = cmd_ctx->command_string ; isspace(*pos) && ('\0' != *pos) ; ++pos) ;
     for (i = 0 ; i < CMD_TOTAL_COMMANDS ; ++i) {
         if (!strncmp(pos, command_info_array[i].cmd_str, strlen(command_info_array[i].cmd_str))) {
             if (CMD_EXIT == i) {
                 /* musl C does not like libuv workqueues calling exit() */
                 execute_command(CMD_EXIT, NULL, NULL);
             }
-            for (lstrip=pos + strlen(command_info_array[i].cmd_str); isspace(*lstrip) && ('\0' != *lstrip); ++lstrip) {;}
-            for (rstrip=lstrip+strlen(lstrip)-1; rstrip>lstrip && isspace(*rstrip); *(rstrip--) = 0 );
+            for (lstrip=pos + strlen(command_info_array[i].cmd_str); isspace(*lstrip) && ('\0' != *lstrip); ++lstrip) ;
+            for (rstrip=lstrip+strlen(lstrip)-1; rstrip>lstrip && isspace(*rstrip); *(rstrip--) = 0 ) ;
 
             cmd_ctx->work.data = cmd_ctx;
             cmd_ctx->idx = i;

@@ -4,23 +4,19 @@
 #define NETDATA_LIB_DUMMIES_H 1
 
 // callback required by fatal()
-void netdata_cleanup_and_exit(int ret)
-{
-    exit(ret);
-}
-
-void send_statistics(const char *action, const char *action_result, const char *action_data)
+void netdata_cleanup_and_exit(int ret, const char *action, const char *action_result, const char *action_data)
 {
     (void)action;
     (void)action_result;
     (void)action_data;
-    return;
+
+    exit(ret);
 }
 
 // callbacks required by popen()
-void signals_block(void){};
-void signals_unblock(void){};
-void signals_reset(void){};
+void signals_block(void){}
+void signals_unblock(void){}
+void signals_reset(void){}
 
 #ifndef UNIT_TESTING
 // callback required by eval()
@@ -30,14 +26,14 @@ int health_variable_lookup(STRING *variable, struct rrdcalc *rc, NETDATA_DOUBLE 
     (void)rc;
     (void)result;
     return 0;
-};
+}
 #endif
 
-void rrdset_thread_rda_free(void){};
-void sender_thread_buffer_free(void){};
-void query_target_free(void){};
-void service_exits(void){};
-void rrd_collector_finished(void){};
+void rrdset_thread_rda_free(void){}
+void sender_thread_buffer_free(void){}
+void query_target_free(void){}
+void service_exits(void){}
+void rrd_collector_finished(void){}
 
 // required by get_system_cpus()
 char *netdata_configured_host_prefix = "";

@@ -67,7 +67,7 @@ void journalfile_v2_generate_path(struct rrdengine_datafile *datafile, char *str
 
 void journalfile_v1_generate_path(struct rrdengine_datafile *datafile, char *str, size_t maxlen)
 {
-    (void) snprintfz(str, maxlen, "%s/" WALFILE_PREFIX RRDENG_FILE_NUMBER_PRINT_TMPL WALFILE_EXTENSION,
+    (void) snprintfz(str, maxlen - 1, "%s/" WALFILE_PREFIX RRDENG_FILE_NUMBER_PRINT_TMPL WALFILE_EXTENSION,
                     datafile->ctx->config.dbfiles_path, datafile->tier, datafile->fileno);
 }
 
@@ -637,9 +637,12 @@ static int journalfile_check_superblock(uv_file file)
     fatal_assert(req.result >= 0);
     uv_fs_req_cleanup(&req);
 
-    if (strncmp(superblock->magic_number, RRDENG_JF_MAGIC, RRDENG_MAGIC_SZ) ||
-        strncmp(superblock->version, RRDENG_JF_VER, RRDENG_VER_SZ)) {
-        netdata_log_error("DBENGINE: File has invalid superblock.");
+
+    char jf_magic[RRDENG_MAGIC_SZ] = RRDENG_JF_MAGIC;
+    char jf_ver[RRDENG_VER_SZ] = RRDENG_JF_VER;
+    if (strncmp(superblock->magic_number, jf_magic, RRDENG_MAGIC_SZ) != 0 ||
+        strncmp(superblock->version, jf_ver, RRDENG_VER_SZ) != 0) {
+        nd_log(NDLS_DAEMON, NDLP_ERR, "DBENGINE: File has invalid superblock.");
         ret = UV_EINVAL;
     } else {
         ret = 0;
@@ -700,7 +703,7 @@ static void journalfile_restore_extent_metadata(struct rrdengine_instance *ctx, 
                     .section = (Word_t)ctx,
                     .first_time_s = vd.start_time_s,
                     .last_time_s = vd.end_time_s,
-                    .latest_update_every_s = (uint32_t) vd.update_every_s,
+                    .latest_update_every_s = vd.update_every_s,
             };
 
             bool added;
@@ -1005,7 +1008,7 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
         time_t end_time_s = header_start_time_s + metric->delta_end_s;
 
         mrg_update_metric_retention_and_granularity_by_uuid(
-                main_mrg, (Word_t)ctx, &metric->uuid, start_time_s, end_time_s, (time_t) metric->update_every_s, now_s);
+                main_mrg, (Word_t)ctx, &metric->uuid, start_time_s, end_time_s, metric->update_every_s, now_s);
 
         metric++;
     }
@@ -1013,7 +1016,7 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
 
-    netdata_log_info("DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
         , ctx->config.tier, journalfile->datafile->fileno
         , (double)data_size / 1024 / 1024
         , (double)entries / 1000
@@ -1073,7 +1076,8 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         return 1;
     }
 
-    netdata_log_info("DBENGINE: checking integrity of '%s'", path_v2);
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: checking integrity of '%s'", path_v2);
+
     usec_t validation_start_ut = now_monotonic_usec();
     int rc = journalfile_v2_validate(data_start, journal_v2_file_size, journal_v1_file_size);
     if (unlikely(rc)) {
@@ -1104,7 +1108,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     usec_t finished_ut = now_monotonic_usec();
 
-    netdata_log_info("DBENGINE: journal v2 '%s' loaded, size: %0.2f MiB, metrics: %0.2f k, "
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 '%s' loaded, size: %0.2f MiB, metrics: %0.2f k, "
          "mmap: %0.2f ms, validate: %0.2f ms"
          , path_v2
          , (double)journal_v2_file_size / 1024 / 1024
@@ -1225,7 +1229,7 @@ void *journalfile_v2_write_data_page(struct journal_v2_header *j2_header, void *
     data_page->delta_end_s = (uint32_t) (page_info->end_time_s - (time_t) (j2_header->start_time_ut) / USEC_PER_SEC);
     data_page->extent_index = page_info->extent_index;
 
-    data_page->update_every_s = (uint32_t) page_info->update_every_s;
+    data_page->update_every_s = page_info->update_every_s;
     data_page->page_length = (uint16_t) (ei ? ei->page_length : page_info->page_length);
     data_page->type = 0;
 
@@ -1251,7 +1255,7 @@ static void *journalfile_v2_write_descriptors(struct journal_v2_header *j2_heade
         page_info = *PValue;
         // Write one descriptor and return the next data page location
         data_page = journalfile_v2_write_data_page(j2_header, (void *) data_page, page_info);
-        update_every_s = (uint32_t) page_info->update_every_s;
+        update_every_s = page_info->update_every_s;
         if (NULL == data_page)
             break;
     }
@@ -1535,13 +1539,13 @@ int journalfile_load(struct rrdengine_instance *ctx, struct rrdengine_journalfil
     }
     ctx_io_read_op_bytes(ctx, sizeof(struct rrdeng_jf_sb));
 
-    netdata_log_info("DBENGINE: loading journal file '%s'", path);
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: loading journal file '%s'", path);
 
     max_id = journalfile_iterate_transactions(ctx, journalfile);
 
     __atomic_store_n(&ctx->atomic.transaction_id, MAX(__atomic_load_n(&ctx->atomic.transaction_id, __ATOMIC_RELAXED), max_id + 1), __ATOMIC_RELAXED);
 
-    netdata_log_info("DBENGINE: journal file '%s' loaded (size:%"PRIu64").", path, file_size);
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal file '%s' loaded (size:%" PRIu64 ").", path, file_size);
 
     bool is_last_file = (ctx_last_fileno_get(ctx) == journalfile->datafile->fileno);
     if (is_last_file && journalfile->datafile->pos <= rrdeng_target_data_file_size(ctx) / 3) {

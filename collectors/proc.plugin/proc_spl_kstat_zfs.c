@@ -6,7 +6,7 @@
 #define ZFS_PROC_ARCSTATS "/proc/spl/kstat/zfs/arcstats"
 #define ZFS_PROC_POOLS "/proc/spl/kstat/zfs"
 
-#define STATE_SIZE 9
+#define STATE_SIZE 20
 #define MAX_CHART_ID 256
 
 extern struct arcstats arcstats;
@@ -335,7 +335,10 @@ int do_proc_spl_kstat_zfs_pool_state(int update_every, usec_t dt)
     if (likely(do_zfs_pool_state)) {
         DIR *dir = opendir(dirname);
         if (unlikely(!dir)) {
-            collector_error("Cannot read directory '%s'", dirname);
+            if (errno == ENOENT)
+                collector_info("Cannot read directory '%s'", dirname);
+            else
+                collector_error("Cannot read directory '%s'", dirname);
             return 1;
         }
 
@@ -354,7 +357,7 @@ int do_proc_spl_kstat_zfs_pool_state(int update_every, usec_t dt)
                 if (unlikely(!pool)) {
                     struct zfs_pool new_zfs_pool = {};
                     pool = dictionary_set(zfs_pools, de->d_name, &new_zfs_pool, sizeof(struct zfs_pool));
-                };
+                }
 
                 pool->updated = 1;
 

@@ -23,7 +23,8 @@
 #include "libnetdata/required_dummies.h"
 
 #define FREEIPMI_GLOBAL_FUNCTION_SENSORS() do { \
-        fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " GLOBAL \"ipmi-sensors\" %d \"%s\"\n", 5, "Displays current sensor state and readings"); \
+        fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " GLOBAL \"ipmi-sensors\" %d \"%s\" \"top\" \"any\" %d\n", \
+                5, "Displays current sensor state and readings", 100); \
     } while(0)
 
 // component names, based on our patterns
@@ -1470,7 +1471,7 @@ static const char *get_sensor_function_priority(struct sensor *sn) {
     }
 }
 
-static void freeimi_function_sensors(const char *transaction, char *function __maybe_unused, int timeout __maybe_unused, bool *cancelled __maybe_unused) {
+static void freeimi_function_sensors(const char *transaction, char *function __maybe_unused, usec_t *stop_monotonic_ut __maybe_unused, bool *cancelled __maybe_unused) {
     time_t expires = now_realtime_sec() + update_every;
 
     BUFFER *wb = buffer_create(PLUGINSD_LINE_MAX, NULL);
@@ -1622,29 +1623,13 @@ static void plugin_exit(int code) {
 }
 
 int main (int argc, char **argv) {
+    clocks_init();
+    nd_log_initialize_for_external_plugins("freeipmi.plugin");
+    netdata_threads_init_for_external_plugins(0); // set the default threads stack size here
+
     bool netdata_do_sel = IPMI_ENABLE_SEL_BY_DEFAULT;
 
-    stderror = stderr;
-    clocks_init();
-
     bool debug = false;
-
-    // ------------------------------------------------------------------------
-    // initialization of netdata plugin
-
-    program_name = "freeipmi.plugin";
-
-    // disable syslog
-    error_log_syslog = 0;
-
-    // set errors flood protection to 100 logs per hour
-    error_log_errors_per_period = 100;
-    error_log_throttle_period = 3600;
-
-    log_set_global_severity_for_external_plugins();
-
-    // initialize the threads
-    netdata_threads_init_for_external_plugins(0); // set the default threads stack size here
 
     // ------------------------------------------------------------------------
     // parse command line parameters
@@ -1919,7 +1904,7 @@ int main (int argc, char **argv) {
     errno = 0;
 
     if(freq_s && freq_s < update_every)
-        collector_error("%s(): update frequency %d seconds is too small for IPMI. Using %d.",
+        collector_info("%s(): update frequency %d seconds is too small for IPMI. Using %d.",
                         __FUNCTION__, freq_s, update_every);
 
     update_every = freq_s = MAX(freq_s, update_every);

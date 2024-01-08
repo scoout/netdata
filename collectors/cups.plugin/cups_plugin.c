@@ -175,7 +175,7 @@ struct job_metrics *get_job_metrics(char *dest) {
         struct job_metrics new_job_metrics = { .id = ++job_id };
         jm = dictionary_set(dict_dest_job_metrics, dest, &new_job_metrics, sizeof(struct job_metrics));
         send_job_charts_definitions_to_netdata(dest, jm->id, false);
-    };
+    }
 
     return jm;
 }
@@ -226,22 +226,8 @@ void reset_metrics() {
 }
 
 int main(int argc, char **argv) {
-    stderror = stderr;
     clocks_init();
-
-    // ------------------------------------------------------------------------
-    // initialization of netdata plugin
-
-    program_name = "cups.plugin";
-
-    // disable syslog
-    error_log_syslog = 0;
-
-    // set errors flood protection to 100 logs per hour
-    error_log_errors_per_period = 100;
-    error_log_throttle_period = 3600;
-
-    log_set_global_severity_for_external_plugins();
+    nd_log_initialize_for_external_plugins("cups.plugin");
 
     parse_command_line(argc, argv);
 
@@ -437,6 +423,13 @@ int main(int argc, char **argv) {
         // restart check (14400 seconds)
         if (!now_monotonic_sec() - started_t > 14400)
             break;
+
+        fprintf(stdout, "\n");
+        fflush(stdout);
+        if (ferror(stdout) && errno == EPIPE) {
+            netdata_log_error("error writing to stdout: EPIPE. Exiting...");
+            return 1;
+        }
     }
 
     httpClose(http);

@@ -5,15 +5,14 @@
 
 #include "../libnetdata.h"
 
-#ifndef HAVE_STRUCT_TIMESPEC
+#ifndef HAVE_CLOCK_GETTIME
 struct timespec {
     time_t tv_sec;  /* seconds */
     long   tv_nsec; /* nanoseconds */
 };
 #endif
 
-#ifndef HAVE_CLOCKID_T
-typedef int clockid_t;
+#ifndef HAVE_CLOCK_GETTIME
 #endif
 
 typedef uint64_t nsec_t;
@@ -117,6 +116,7 @@ usec_t now_realtime_usec(void);
 
 int now_monotonic_timeval(struct timeval *tv);
 time_t now_monotonic_sec(void);
+msec_t now_realtime_msec(void);
 usec_t now_monotonic_usec(void);
 int now_monotonic_high_precision_timeval(struct timeval *tv);
 time_t now_monotonic_high_precision_sec(void);
@@ -142,7 +142,7 @@ usec_t heartbeat_next(heartbeat_t *hb, usec_t tick);
 void heartbeat_statistics(usec_t *min_ptr, usec_t *max_ptr, usec_t *average_ptr, size_t *count_ptr);
 
 void sleep_usec_with_now(usec_t usec, usec_t started_ut);
-#define sleep_usec(usec) sleep_usec_with_now(usec, 0);
+#define sleep_usec(usec) sleep_usec_with_now(usec, 0)
 
 void clocks_init(void);
 

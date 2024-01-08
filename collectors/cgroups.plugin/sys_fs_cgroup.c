@@ -255,7 +255,7 @@ void read_cgroup_plugin_configuration() {
     if(cgroup_update_every < localhost->rrd_update_every)
         cgroup_update_every = localhost->rrd_update_every;
 
-    cgroup_check_for_new_every = (int)config_get_number("plugin:cgroups", "check for new cgroups every", (long long)cgroup_check_for_new_every * (long long)cgroup_update_every);
+    cgroup_check_for_new_every = (int)config_get_number("plugin:cgroups", "check for new cgroups every", cgroup_check_for_new_every);
     if(cgroup_check_for_new_every < cgroup_update_every)
         cgroup_check_for_new_every = cgroup_update_every;
 
@@ -418,6 +418,8 @@ void read_cgroup_plugin_configuration() {
 
                        " !*/init.scope "                      // ignore init.scope
                        " !/system.slice/run-*.scope "         // ignore system.slice/run-XXXX.scope
+                       " *user.slice/docker-*"                // allow docker rootless containers
+                       " !*user.slice*"                       // ignore the rest stuff in user.slice 
                        " *.scope "                            // we need all other *.scope for sure
 
                        // ----------------------------------------------------------------
@@ -452,6 +454,7 @@ void read_cgroup_plugin_configuration() {
                        " !/lxc.monitor* "
                        " !/lxc.pivot "
                        " !/lxc.payload "
+                       " !*lxcfs.service/.control"
                        " !/machine "
                        " !/qemu "
                        " !/system "
@@ -474,7 +477,6 @@ void read_cgroup_plugin_configuration() {
                        " !/system "
                        " !/systemd "
                        " !/user "
-                       " !/user.slice "
                        " !/lxc/*/* "                          //  #2161 #2649
                        " !/lxc.monitor "
                        " !/lxc.payload/*/* "
@@ -1166,7 +1168,7 @@ static void cgroup_read_pids_current(struct pids *pids) {
     if (unlikely(!pids->pids_current_filename))
         return;
 
-    pids->pids_current_updated = !read_single_signed_number_file(pids->pids_current_filename, &pids->pids_current);
+    pids->pids_current_updated = !read_single_number_file(pids->pids_current_filename, &pids->pids_current);
 }
 
 static inline void read_cgroup(struct cgroup *cg) {
@@ -1671,8 +1673,14 @@ void *cgroups_main(void *ptr) {
     // for the other nodes, the origin server should register it
     rrd_collector_started(); // this creates a collector that runs for as long as netdata runs
     cgroup_netdev_link_init();
-    rrd_function_add(localhost, NULL, "containers-vms", 10, RRDFUNCTIONS_CGTOP_HELP, true, cgroup_function_cgroup_top, NULL);
-    rrd_function_add(localhost, NULL, "systemd-services", 10, RRDFUNCTIONS_CGTOP_HELP, true, cgroup_function_systemd_top, NULL);
+
+    rrd_function_add(localhost, NULL, "containers-vms", 10, RRDFUNCTIONS_PRIORITY_DEFAULT / 2,
+                     RRDFUNCTIONS_CGTOP_HELP, "top", HTTP_ACCESS_ANY,
+                     true, cgroup_function_cgroup_top, NULL);
+
+    rrd_function_add(localhost, NULL, "systemd-services", 10, RRDFUNCTIONS_PRIORITY_DEFAULT / 3,
+                     RRDFUNCTIONS_SYSTEMD_SERVICES_HELP, "top", HTTP_ACCESS_ANY,
+                     true, cgroup_function_systemd_top, NULL);
 
     heartbeat_t hb;
     heartbeat_init(&hb);

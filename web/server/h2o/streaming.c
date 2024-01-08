@@ -138,9 +138,10 @@ static void stream_on_recv(h2o_socket_t *sock, const char *err)
 #define STREAM_METHOD "STREAM "
 #define USER_AGENT "User-Agent: "
 
-#define NEED_MIN_BYTES(buf, bytes)       \
-if (rbuf_bytes_available(buf) < bytes)   \
-    return GIMME_MORE_OF_DEM_SWEET_BYTEZ;
+#define NEED_MIN_BYTES(buf, bytes) do {      \
+    if(rbuf_bytes_available(buf) < bytes)    \
+        return GIMME_MORE_OF_DEM_SWEET_BYTEZ;\
+} while(0)
 
 // TODO check in streaming code this is probably defined somewhere already
 #define MAX_LEN_STREAM_HELLO (1024*2)
@@ -294,8 +295,9 @@ void stream_process(h2o_stream_conn_t *conn, int initial)
             socklen_t len = h2o_socket_getpeername(conn->sock, &client);
             char peername[NI_MAXHOST];
             size_t peername_len = h2o_socket_getnumerichost(&client, len, peername);
-            memcpy(w.client_ip, peername, peername_len);
-            w.client_ip[peername_len] = 0;
+            size_t cpy_len = sizeof(w.client_ip) < peername_len ? sizeof(w.client_ip) : peername_len;
+            memcpy(w.client_ip, peername, cpy_len);
+            w.client_ip[cpy_len - 1] = 0;
             w.user_agent = conn->user_agent;
 
             rc = rrdpush_receiver_thread_spawn(&w, conn->url, conn);

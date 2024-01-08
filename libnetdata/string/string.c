@@ -88,8 +88,8 @@ void string_statistics(size_t *inserts, size_t *deletes, size_t *searches, size_
     }
 }
 
-#define string_entry_acquire(se) __atomic_add_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
-#define string_entry_release(se) __atomic_sub_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
+#define string_entry_acquire(se) __atomic_add_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST)
+#define string_entry_release(se) __atomic_sub_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST)
 
 static inline bool string_entry_check_and_acquire(STRING *se) {
 #ifdef NETDATA_INTERNAL_CHECKS
@@ -416,7 +416,7 @@ static char **string_unittest_generate_names(size_t entries) {
     char **names = mallocz(sizeof(char *) * entries);
     for(size_t i = 0; i < entries ;i++) {
         char buf[25 + 1] = "";
-        snprintfz(buf, 25, "name.%zu.0123456789.%zu \t !@#$%%^&*(),./[]{}\\|~`", i, entries / 2 + i);
+        snprintfz(buf, sizeof(buf) - 1, "name.%zu.0123456789.%zu \t !@#$%%^&*(),./[]{}\\|~`", i, entries / 2 + i);
         names[i] = strdupz(buf);
     }
     return names;

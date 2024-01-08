@@ -69,17 +69,12 @@ typedef enum __attribute__((packed)) {
     BIB_LIB_LZ4,
     BIB_LIB_ZSTD,
     BIB_LIB_ZLIB,
-    BIB_LIB_JUDY,
-    BIB_LIB_DLIB,
     BIB_LIB_PROTOBUF,
     BIB_LIB_OPENSSL,
     BIB_LIB_LIBDATACHANNEL,
     BIB_LIB_JSONC,
     BIB_LIB_LIBCAP,
     BIB_LIB_LIBCRYPTO,
-    BIB_LIB_LIBM,
-    BIB_LIB_JEMALLOC,
-    BIB_LIB_TCMALLOC,
     BIB_PLUGIN_APPS,
     BIB_PLUGIN_LINUX_CGROUPS,
     BIB_PLUGIN_LINUX_CGROUP_NETWORK,
@@ -101,6 +96,7 @@ typedef enum __attribute__((packed)) {
     BIB_PLUGIN_SLABINFO,
     BIB_PLUGIN_XEN,
     BIB_PLUGIN_XEN_VBD_ERROR,
+    BIB_PLUGIN_LOGS_MANAGEMENT,
     BIB_EXPORT_AWS_KINESIS,
     BIB_EXPORT_GCP_PUBSUB,
     BIB_EXPORT_MONGOC,
@@ -342,7 +338,7 @@ static struct {
                 .json = "cpu_frequency",
                 .value = "unknown",
         },
-        [BIB_HW_RAM_SIZE] = {
+        [BIB_HW_ARCHITECTURE] = {
                 .category = BIC_HARDWARE,
                 .type = BIT_STRING,
                 .analytics = NULL,
@@ -350,7 +346,7 @@ static struct {
                 .json = "cpu_architecture",
                 .value = "unknown",
         },
-        [BIB_HW_DISK_SPACE] = {
+        [BIB_HW_RAM_SIZE] = {
                 .category = BIC_HARDWARE,
                 .type = BIT_STRING,
                 .analytics = NULL,
@@ -358,7 +354,7 @@ static struct {
                 .json = "ram",
                 .value = "unknown",
         },
-        [BIB_HW_ARCHITECTURE] = {
+        [BIB_HW_DISK_SPACE] = {
                 .category = BIC_HARDWARE,
                 .type = BIT_STRING,
                 .analytics = NULL,
@@ -654,23 +650,6 @@ static struct {
                 .json = "zlib",
                 .value = NULL,
         },
-        [BIB_LIB_JUDY] = {
-                .category = BIC_LIBS,
-                .type = BIT_BOOLEAN,
-                .analytics = NULL,
-                .print = "Judy (high-performance dynamic arrays and hashtables)",
-                .json = "judy",
-                .status = true,
-                .value = "bundled",
-        },
-        [BIB_LIB_DLIB] = {
-                .category = BIC_LIBS,
-                .type = BIT_BOOLEAN,
-                .analytics = NULL,
-                .print = "dlib (robust machine learning toolkit)",
-                .json = "dlib",
-                .value = NULL,
-        },
         [BIB_LIB_PROTOBUF] = {
                 .category = BIC_LIBS,
                 .type = BIT_BOOLEAN,
@@ -717,30 +696,6 @@ static struct {
                 .analytics = "libcrypto",
                 .print = "libcrypto (cryptographic functions)",
                 .json = "libcrypto",
-                .value = NULL,
-        },
-        [BIB_LIB_LIBM] = {
-                .category = BIC_LIBS,
-                .type = BIT_BOOLEAN,
-                .analytics = "libm",
-                .print = "libm (mathematical functions)",
-                .json = "libm",
-                .value = NULL,
-        },
-        [BIB_LIB_JEMALLOC] = {
-                .category = BIC_LIBS,
-                .type = BIT_BOOLEAN,
-                .analytics = "jemalloc",
-                .print = "jemalloc",
-                .json = "jemalloc",
-                .value = NULL,
-        },
-        [BIB_LIB_TCMALLOC] = {
-                .category = BIC_LIBS,
-                .type = BIT_BOOLEAN,
-                .analytics = "tcmalloc",
-                .print = "TCMalloc",
-                .json = "tcmalloc",
                 .value = NULL,
         },
         [BIB_PLUGIN_APPS] = {
@@ -909,6 +864,14 @@ static struct {
                 .analytics = "Xen VBD Error Tracking",
                 .print = "Xen VBD Error Tracking",
                 .json = "xen-vbd-error",
+                .value = NULL,
+        },
+        [BIB_PLUGIN_LOGS_MANAGEMENT] = {
+                .category = BIC_PLUGINS,
+                .type = BIT_BOOLEAN,
+                .analytics = "Logs Management",
+                .print = "Logs Management",
+                .json = "logs-management",
                 .value = NULL,
         },
         [BIB_EXPORT_MONGOC] = {
@@ -1194,17 +1157,8 @@ __attribute__((constructor)) void initialize_build_info(void) {
 #ifdef HAVE_CRYPTO
     build_info_set_status(BIB_LIB_LIBCRYPTO, true);
 #endif
-#ifdef STORAGE_WITH_MATH
-    build_info_set_status(BIB_LIB_LIBM, true);
-#endif
-#ifdef ENABLE_JEMALLOC
-    build_info_set_status(BIB_LIB_JEMALLOC, true);
-#endif
-#ifdef ENABLE_TCMALLOC
-    build_info_set_status(BIB_LIB_TCMALLOC, true);
-#endif
 
-#ifdef ENABLE_APPS_PLUGIN
+#ifdef ENABLE_PLUGIN_APPS
     build_info_set_status(BIB_PLUGIN_APPS, true);
 #endif
 #ifdef HAVE_SETNS
@@ -1216,32 +1170,35 @@ __attribute__((constructor)) void initialize_build_info(void) {
     build_info_set_status(BIB_PLUGIN_IDLEJITTER, true);
     build_info_set_status(BIB_PLUGIN_BASH, true);
 
-#ifdef ENABLE_DEBUGFS_PLUGIN
+#ifdef ENABLE_PLUGIN_DEBUGFS
     build_info_set_status(BIB_PLUGIN_DEBUGFS, true);
 #endif
-#ifdef HAVE_CUPS
+#ifdef ENABLE_PLUGIN_CUPS
     build_info_set_status(BIB_PLUGIN_CUPS, true);
 #endif
-#ifdef HAVE_LIBBPF
+#ifdef ENABLE_PLUGIN_EBPF
     build_info_set_status(BIB_PLUGIN_EBPF, true);
 #endif
-#ifdef HAVE_FREEIPMI
+#ifdef ENABLE_PLUGIN_FREEIPMI
     build_info_set_status(BIB_PLUGIN_FREEIPMI, true);
 #endif
-#ifdef HAVE_NFACCT
+#ifdef ENABLE_PLUGIN_NFACCT
     build_info_set_status(BIB_PLUGIN_NFACCT, true);
 #endif
-#ifdef ENABLE_PERF_PLUGIN
+#ifdef ENABLE_PLUGIN_PERF
     build_info_set_status(BIB_PLUGIN_PERF, true);
 #endif
-#ifdef ENABLE_SLABINFO
+#ifdef ENABLE_PLUGIN_SLABINFO
     build_info_set_status(BIB_PLUGIN_SLABINFO, true);
 #endif
-#ifdef HAVE_LIBXENSTAT
+#ifdef ENABLE_PLUGIN_XENSTAT
     build_info_set_status(BIB_PLUGIN_XEN, true);
 #endif
 #ifdef HAVE_XENSTAT_VBD_ERROR
     build_info_set_status(BIB_PLUGIN_XEN_VBD_ERROR, true);
+#endif
+#ifdef ENABLE_LOGSMANAGEMENT
+    build_info_set_status(BIB_PLUGIN_LOGS_MANAGEMENT, true);
 #endif
 
     build_info_set_status(BIB_EXPORT_PROMETHEUS_EXPORTER, true);
@@ -1279,7 +1236,7 @@ __attribute__((constructor)) void initialize_build_info(void) {
 // ----------------------------------------------------------------------------
 // system info
 
-int get_system_info(struct rrdhost_system_info *system_info, bool log);
+int get_system_info(struct rrdhost_system_info *system_info);
 static void populate_system_info(void) {
     static bool populated = false;
     static SPINLOCK spinlock = NETDATA_SPINLOCK_INITIALIZER;
@@ -1302,7 +1259,7 @@ static void populate_system_info(void) {
     }
     else {
         system_info = callocz(1, sizeof(struct rrdhost_system_info));
-        get_system_info(system_info, false);
+        get_system_info(system_info);
         free_system_info = true;
     }
 
@@ -1487,7 +1444,7 @@ void print_build_info(void) {
     print_build_info_category_to_console(BIC_PLUGINS, "Plugins");
     print_build_info_category_to_console(BIC_EXPORTERS, "Exporters");
     print_build_info_category_to_console(BIC_DEBUG_DEVEL, "Debug/Developer Features");
-};
+}
 
 void build_info_to_json_object(BUFFER *b) {
     populate_packaging_info();
@@ -1521,7 +1478,7 @@ void print_build_info_json(void) {
     buffer_json_finalize(b);
     printf("%s\n", buffer_tostring(b));
     buffer_free(b);
-};
+}
 
 void analytics_build_info(BUFFER *b) {
     populate_packaging_info();

@@ -44,8 +44,6 @@ char *get_agent_claimid()
 #define CLAIMING_COMMAND_LENGTH 16384
 #define CLAIMING_PROXY_LENGTH (CLAIMING_COMMAND_LENGTH/4)
 
-extern struct registry registry;
-
 /* rrd_init() and post_conf_load() must have been called before this function */
 CLAIM_AGENT_RESPONSE claim_agent(const char *claiming_arguments, bool force, const char **msg __maybe_unused)
 {
@@ -102,7 +100,7 @@ CLAIM_AGENT_RESPONSE claim_agent(const char *claiming_arguments, bool force, con
 
     netdata_log_info("Waiting for claiming command '%s' to finish.", command_exec_buffer);
     char read_buffer[100 + 1];
-    while (fgets(read_buffer, 100, fp_child_output) != NULL) {;}
+    while (fgets(read_buffer, 100, fp_child_output) != NULL) ;
 
     exit_code = netdata_pclose(fp_child_input, fp_child_output, command_pid);
 
@@ -137,10 +135,6 @@ CLAIM_AGENT_RESPONSE claim_agent(const char *claiming_arguments, bool force, con
 
     return CLAIM_AGENT_FAILED_WITH_MESSAGE;
 }
-
-#ifdef ENABLE_ACLK
-extern int aclk_connected, aclk_kill_link, aclk_disable_runtime;
-#endif
 
 /* Change the claimed state of the agent.
  *
@@ -191,9 +185,9 @@ void load_claiming_state(void)
         uuid_unparse_lower(uuid, localhost->aclk_state.claimed_id);
     }
 
+    rrdhost_aclk_state_unlock(localhost);
     invalidate_node_instances(&localhost->host_uuid, claimed_id ? &uuid : NULL);
     metaqueue_store_claim_id(&localhost->host_uuid, claimed_id ? &uuid : NULL);
-    rrdhost_aclk_state_unlock(localhost);
 
     if (!claimed_id) {
         netdata_log_info("Unable to load '%s', setting state to AGENT_UNCLAIMED", filename);
@@ -323,11 +317,11 @@ static bool check_claim_param(const char *s) {
 }
 
 void claim_reload_all(void) {
-    error_log_limit_unlimited();
+    nd_log_limits_unlimited();
     load_claiming_state();
     registry_update_cloud_base_url();
     rrdpush_send_claimed_id(localhost);
-    error_log_limit_reset();
+    nd_log_limits_reset();
 }
 
 int api_v2_claim(struct web_client *w, char *url) {

@@ -1,4 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "metric.h"
+#include "cache.h"
+#include "rrddiskprotocol.h"
 
 typedef int32_t REFCOUNT;
 #define REFCOUNT_DELETING (-100)
@@ -103,8 +106,11 @@ static inline void mrg_stats_size_judyhs_removed_uuid(MRG *mrg, size_t partition
 
 static inline size_t uuid_partition(MRG *mrg __maybe_unused, uuid_t *uuid) {
     uint8_t *u = (uint8_t *)uuid;
-    size_t *n = (size_t *)&u[UUID_SZ - sizeof(size_t)];
-    return *n % mrg->partitions;
+
+    size_t n;
+    memcpy(&n, &u[UUID_SZ - sizeof(size_t)], sizeof(size_t));
+
+    return n % mrg->partitions;
 }
 
 static inline time_t mrg_metric_get_first_time_s_smart(MRG *mrg __maybe_unused, METRIC *metric) {
@@ -126,7 +132,7 @@ static inline time_t mrg_metric_get_first_time_s_smart(MRG *mrg __maybe_unused, 
 
 static inline REFCOUNT metric_acquire(MRG *mrg __maybe_unused, METRIC *metric) {
     size_t partition = metric->partition;
-    REFCOUNT expected = metric->refcount;
+    REFCOUNT expected = __atomic_load_n(&metric->refcount, __ATOMIC_RELAXED);
     REFCOUNT refcount;
 
     do {
@@ -146,7 +152,7 @@ static inline REFCOUNT metric_acquire(MRG *mrg __maybe_unused, METRIC *metric) {
 
 static inline bool metric_release_and_can_be_deleted(MRG *mrg __maybe_unused, METRIC *metric) {
     size_t partition = metric->partition;
-    REFCOUNT expected = metric->refcount;
+    REFCOUNT expected = __atomic_load_n(&metric->refcount, __ATOMIC_RELAXED);
     REFCOUNT refcount;
 
     do {
@@ -161,8 +167,8 @@ static inline bool metric_release_and_can_be_deleted(MRG *mrg __maybe_unused, ME
 
     __atomic_sub_fetch(&mrg->index[partition].stats.current_references, 1, __ATOMIC_RELAXED);
 
-    time_t first, last, ue;
-    mrg_metric_get_retention(mrg, metric, &first, &last, &ue);
+    time_t first, last;
+    mrg_metric_get_retention(mrg, metric, &first, &last, NULL);
     return (!first || !last || first > last);
 }
 
@@ -393,8 +399,8 @@ inline bool mrg_metric_set_first_time_s(MRG *mrg __maybe_unused, METRIC *metric,
     return true;
 }
 
-inline void mrg_metric_expand_retention(MRG *mrg __maybe_unused, METRIC *metric, time_t first_time_s, time_t last_time_s, time_t update_every_s) {
-    internal_fatal(first_time_s < 0 || last_time_s < 0 || update_every_s < 0,
+inline void mrg_metric_expand_retention(MRG *mrg __maybe_unused, METRIC *metric, time_t first_time_s, time_t last_time_s, uint32_t update_every_s) {
+    internal_fatal(first_time_s < 0 || last_time_s < 0,
                    "DBENGINE METRIC: timestamp is negative");
     internal_fatal(first_time_s > max_acceptable_collected_time(),
                    "DBENGINE METRIC: metric first time is in the future");
@@ -424,13 +430,14 @@ inline time_t mrg_metric_get_first_time_s(MRG *mrg __maybe_unused, METRIC *metri
     return mrg_metric_get_first_time_s_smart(mrg, metric);
 }
 
-inline void mrg_metric_get_retention(MRG *mrg __maybe_unused, METRIC *metric, time_t *first_time_s, time_t *last_time_s, time_t *update_every_s) {
+inline void mrg_metric_get_retention(MRG *mrg __maybe_unused, METRIC *metric, time_t *first_time_s, time_t *last_time_s, uint32_t *update_every_s) {
     time_t clean = __atomic_load_n(&metric->latest_time_s_clean, __ATOMIC_RELAXED);
     time_t hot = __atomic_load_n(&metric->latest_time_s_hot, __ATOMIC_RELAXED);
 
     *last_time_s = MAX(clean, hot);
     *first_time_s = mrg_metric_get_first_time_s_smart(mrg, metric);
-    *update_every_s = __atomic_load_n(&metric->latest_update_every_s, __ATOMIC_RELAXED);
+    if (update_every_s)
+        *update_every_s = __atomic_load_n(&metric->latest_update_every_s, __ATOMIC_RELAXED);
 }
 
 inline bool mrg_metric_set_clean_latest_time_s(MRG *mrg __maybe_unused, METRIC *metric, time_t latest_time_s) {
@@ -497,8 +504,8 @@ inline bool mrg_metric_zero_disk_retention(MRG *mrg __maybe_unused, METRIC *metr
         }
     } while(do_again);
 
-    time_t first, last, ue;
-    mrg_metric_get_retention(mrg, metric, &first, &last, &ue);
+    time_t first, last;
+    mrg_metric_get_retention(mrg, metric, &first, &last, NULL);
     return (first && last && first < last);
 }
 
@@ -523,25 +530,21 @@ inline time_t mrg_metric_get_latest_time_s(MRG *mrg __maybe_unused, METRIC *metr
     return MAX(clean, hot);
 }
 
-inline bool mrg_metric_set_update_every(MRG *mrg __maybe_unused, METRIC *metric, time_t update_every_s) {
-    internal_fatal(update_every_s < 0, "DBENGINE METRIC: timestamp is negative");
-
+inline bool mrg_metric_set_update_every(MRG *mrg __maybe_unused, METRIC *metric, uint32_t update_every_s) {
     if(update_every_s > 0)
         return set_metric_field_with_condition(metric->latest_update_every_s, update_every_s, true);
 
     return false;
 }
 
-inline bool mrg_metric_set_update_every_s_if_zero(MRG *mrg __maybe_unused, METRIC *metric, time_t update_every_s) {
-    internal_fatal(update_every_s < 0, "DBENGINE METRIC: timestamp is negative");
-
+inline bool mrg_metric_set_update_every_s_if_zero(MRG *mrg __maybe_unused, METRIC *metric, uint32_t update_every_s) {
     if(update_every_s > 0)
         return set_metric_field_with_condition(metric->latest_update_every_s, update_every_s, _current <= 0);
 
     return false;
 }
 
-inline time_t mrg_metric_get_update_every_s(MRG *mrg __maybe_unused, METRIC *metric) {
+inline uint32_t mrg_metric_get_update_every_s(MRG *mrg __maybe_unused, METRIC *metric) {
     return __atomic_load_n(&metric->latest_update_every_s, __ATOMIC_RELAXED);
 }
 
@@ -588,30 +591,33 @@ inline bool mrg_metric_clear_writer(MRG *mrg, METRIC *metric) {
 inline void mrg_update_metric_retention_and_granularity_by_uuid(
         MRG *mrg, Word_t section, uuid_t *uuid,
         time_t first_time_s, time_t last_time_s,
-        time_t update_every_s, time_t now_s)
+        uint32_t update_every_s, time_t now_s)
 {
     if(unlikely(last_time_s > now_s)) {
-        error_limit_static_global_var(erl, 1, 0);
-        error_limit(&erl, "DBENGINE JV2: wrong last time on-disk (%ld - %ld, now %ld), "
-                          "fixing last time to now",
-                          first_time_s, last_time_s, now_s);
+        nd_log_limit_static_global_var(erl, 1, 0);
+        nd_log_limit(&erl, NDLS_DAEMON, NDLP_WARNING,
+                     "DBENGINE JV2: wrong last time on-disk (%ld - %ld, now %ld), "
+                     "fixing last time to now",
+                     first_time_s, last_time_s, now_s);
         last_time_s = now_s;
     }
 
     if (unlikely(first_time_s > last_time_s)) {
-        error_limit_static_global_var(erl, 1, 0);
-        error_limit(&erl, "DBENGINE JV2: wrong first time on-disk (%ld - %ld, now %ld), "
-                          "fixing first time to last time",
-                          first_time_s, last_time_s, now_s);
+        nd_log_limit_static_global_var(erl, 1, 0);
+        nd_log_limit(&erl, NDLS_DAEMON, NDLP_WARNING,
+                     "DBENGINE JV2: wrong first time on-disk (%ld - %ld, now %ld), "
+                     "fixing first time to last time",
+                     first_time_s, last_time_s, now_s);
 
         first_time_s = last_time_s;
     }
 
     if (unlikely(first_time_s == 0 || last_time_s == 0)) {
-        error_limit_static_global_var(erl, 1, 0);
-        error_limit(&erl, "DBENGINE JV2: zero on-disk timestamps (%ld - %ld, now %ld), "
-                          "using them as-is",
-                          first_time_s, last_time_s, now_s);
+        nd_log_limit_static_global_var(erl, 1, 0);
+        nd_log_limit(&erl, NDLS_DAEMON, NDLP_WARNING,
+                     "DBENGINE JV2: zero on-disk timestamps (%ld - %ld, now %ld), "
+                     "using them as-is",
+                     first_time_s, last_time_s, now_s);
     }
 
     bool added = false;
@@ -622,7 +628,7 @@ inline void mrg_update_metric_retention_and_granularity_by_uuid(
                 .section = section,
                 .first_time_s = first_time_s,
                 .last_time_s = last_time_s,
-                .latest_update_every_s = (uint32_t) update_every_s
+                .latest_update_every_s = update_every_s
         };
         metric = mrg_metric_add_and_acquire(mrg, entry, &added);
     }
@@ -828,7 +834,7 @@ int mrg_unittest(void) {
     pthread_t th[threads];
     for(size_t i = 0; i < threads ; i++) {
         char buf[15 + 1];
-        snprintfz(buf, 15, "TH[%zu]", i);
+        snprintfz(buf, sizeof(buf) - 1, "TH[%zu]", i);
         netdata_thread_create(&th[i], buf,
                               NETDATA_THREAD_OPTION_JOINABLE | NETDATA_THREAD_OPTION_DONT_LOG,
                               mrg_stress, &t);

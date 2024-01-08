@@ -27,24 +27,10 @@ void get_netdata_execution_path(void) {
 
     netdata_exe_file[exepath_size] = '\0';
 
-    strcpy(netdata_exe_path, netdata_exe_file);
-    dirname(netdata_exe_path);
-}
-
-static void chown_open_file(int fd, uid_t uid, gid_t gid) {
-    if(fd == -1) return;
-
-    struct stat buf;
-
-    if(fstat(fd, &buf) == -1) {
-        netdata_log_error("Cannot fstat() fd %d", fd);
-        return;
-    }
-
-    if((buf.st_uid != uid || buf.st_gid != gid) && S_ISREG(buf.st_mode)) {
-        if(fchown(fd, uid, gid) == -1)
-            netdata_log_error("Cannot fchown() fd %d.", fd);
-    }
+    // macOS's dirname(3) does not modify passed string
+    char *tmpdir = strdupz(netdata_exe_file);
+    strcpy(netdata_exe_path, dirname(tmpdir));
+    freez(tmpdir);
 }
 
 static void fix_directory_file_permissions(const char *dirname, uid_t uid, gid_t gid, bool recursive)
@@ -124,9 +110,6 @@ int become_user(const char *username, int pid_fd) {
     uid_t uid = pw->pw_uid;
     gid_t gid = pw->pw_gid;
 
-    if (am_i_root)
-        netdata_log_info("I am root, so checking permissions");
-
     prepare_required_directories(uid, gid);
 
     if(pidfile[0]) {
@@ -150,9 +133,9 @@ int become_user(const char *username, int pid_fd) {
         }
     }
 
+    nd_log_chown_log_files(uid, gid);
     chown_open_file(STDOUT_FILENO, uid, gid);
     chown_open_file(STDERR_FILENO, uid, gid);
-    chown_open_file(stdaccess_fd, uid, gid);
     chown_open_file(pid_fd, uid, gid);
 
     if(supplementary_groups && ngroups > 0) {
@@ -229,7 +212,7 @@ static void oom_score_adj(void) {
     // check the environment
     char *s = getenv("OOMScoreAdjust");
     if(!s || !*s) {
-        snprintfz(buf, 30, "%d", (int)wanted_score);
+        snprintfz(buf, sizeof(buf) - 1, "%d", (int)wanted_score);
         s = buf;
     }
 
@@ -264,7 +247,7 @@ static void oom_score_adj(void) {
     int written = 0;
     int fd = open("/proc/self/oom_score_adj", O_WRONLY);
     if(fd != -1) {
-        snprintfz(buf, 30, "%d", (int)wanted_score);
+        snprintfz(buf, sizeof(buf) - 1, "%d", (int)wanted_score);
         ssize_t len = strlen(buf);
         if(len > 0 && write(fd, buf, (size_t)len) == len) written = 1;
         close(fd);
@@ -293,7 +276,7 @@ static void process_nice_level(void) {
     else
         netdata_log_debug(D_SYSTEM, "Set netdata nice level to %d.", nice_level);
 #endif // HAVE_NICE
-};
+}
 
 #define SCHED_FLAG_NONE                      0x00
 #define SCHED_FLAG_PRIORITY_CONFIGURABLE     0x01 // the priority is user configurable

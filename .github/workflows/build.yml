@@ -34,7 +34,7 @@ jobs:
           submodules: recursive
       - name: Check files
         id: check-files
-        uses: tj-actions/changed-files@v40
+        uses: tj-actions/changed-files@v41
         with:
           since_last_remote_commit: ${{ github.event_name != 'pull_request' }}
           files: |
@@ -43,10 +43,8 @@ jobs:
             **.h
             **.hh
             **.in
-            configure.ac
+            CMakeLists.txt
             netdata-installer.sh
-            **/Makefile*
-            Makefile*
             .github/data/distros.yml
             .github/workflows/build.yml
             .github/scripts/build-static.sh
@@ -105,20 +103,13 @@ jobs:
         id: build
         if: needs.file-check.outputs.run == 'true'
         run: |
-          git describe
-          mkdir -p artifacts
-          ./packaging/installer/install-required-packages.sh --dont-wait --non-interactive netdata
-          autoreconf -ivf
-          ./configure --prefix=/usr \
-                      --sysconfdir=/etc \
-                      --localstatedir=/var \
-                      --libexecdir=/usr/libexec \
-                      --with-zlib \
-                      --with-math \
-                      --with-user=netdata
-          make dist
+          mkdir -p artifacts/
+          tar --create --file "artifacts/netdata-$(git describe).tar.gz" \
+              --sort=name --posix --auto-compress --exclude=artifacts/ --exclude=.git \
+              --exclude=.gitignore --exclude=.gitattributes --exclude=.gitmodules \
+              --transform "s/^\\.\\//netdata-$(git describe)\\//" --verbose .
+          cd artifacts/
           echo "distfile=$(find . -name 'netdata-*.tar.gz')" >> "${GITHUB_OUTPUT}"
-          cp netdata-*.tar.gz artifacts/
       - name: Store
         id: store
         if: needs.file-check.outputs.run == 'true'
@@ -417,12 +408,6 @@ jobs:
         id: load
         if: needs.file-check.outputs.run == 'true'
         run: docker load --input image.tar
-      - name: Regular build on ${{ matrix.distro }}
-        id: build-basic
-        if: needs.file-check.outputs.run == 'true'
-        run: |
-          docker run --security-opt seccomp=unconfined -w /netdata test:${{ matrix.artifact_key }} \
-              /bin/sh -c 'autoreconf -ivf && ./configure --disable-dependency-tracking && make -j2'
       - name: netdata-installer on ${{ matrix.distro }}, disable cloud
         id: build-no-cloud
         if: needs.file-check.outputs.run == 'true'
@@ -454,7 +439,6 @@ jobs:
               Checkout: ${{ steps.checkout.outcome }}
               Fetch test environment: ${{ steps.fetch.outcome }}
               Load test environment: ${{ steps.load.outcome }}
-              Regular build: ${{ steps.build-basic.outcome }}
               netdata-installer, disable cloud: ${{ steps.build-no-cloud.outcome }}
               netdata-installer, require cloud: ${{ steps.build-cloud.outcome }}
               netdata-installer, no JSON-C: ${{ steps.build-no-jsonc.outcome }}
@@ -513,6 +497,7 @@ jobs:
           cp dist-tarball/* artifacts/download/latest || exit 1
           cd artifacts/download/latest || exit 1
           ln -s ${{ needs.build-dist.outputs.distfile }} netdata-latest.tar.gz || exit 1
+          ls -lFh
           sha256sum -b ./* > "sha256sums.txt" || exit 1
           cat sha256sums.txt
       - name: Fetch test environment
@@ -781,16 +766,16 @@ jobs:
           path: final-artifacts
       - name: Authenticate to GCS
         id: gcs-auth
-        uses: google-github-actions/auth@v1
+        uses: google-github-actions/auth@v2
         with:
           project_id: ${{ secrets.GCP_NIGHTLY_STORAGE_PROJECT }}
           credentials_json: ${{ secrets.GCS_STORAGE_SERVICE_KEY_JSON }}
       - name: Setup GCS
         id: gcs-setup
-        uses: google-github-actions/setup-gcloud@v1.1.1
+        uses: google-github-actions/setup-gcloud@v2.0.1
       - name: Upload Artifacts
         id: upload
-        uses: google-github-actions/upload-cloud-storage@v1.0.3
+        uses: google-github-actions/upload-cloud-storage@v2.0.0
         with:
           destination: ${{ secrets.GCP_NIGHTLY_STORAGE_BUCKET }}
           gzip: false
@@ -865,6 +850,37 @@ jobs:
           makeLatest: true
           tag: ${{ steps.version.outputs.version }}
           token: ${{ secrets.NETDATABOT_GITHUB_TOKEN }}
+      - name: Checkout netdata main Repo # Checkout back to netdata/netdata repo to the update latest packaged versions
+        id: checkout-netdata
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.NETDATABOT_GITHUB_TOKEN }}
+      - name: Init python environment for publish release metadata
+        uses: actions/setup-python@v5
+        id: init-python
+        with:
+          python-version: "3.12"
+      - name: Setup python environment
+        id: setup-python
+        run: |
+          pip install -r .github/scripts/modules/requirements.txt
+      - name: Check if the version is latest and published
+        id: check-latest-version
+        run: |
+          python .github/scripts/check_latest_versions.py  ${{ steps.version.outputs.version }}
+      - name: SSH setup
+        id: ssh-setup
+        if: github.event_name == 'workflow_dispatch' && github.repository == 'netdata/netdata' && steps.check-latest-version.outputs.versions_needs_update == 'true'
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.NETDATABOT_PACKAGES_SSH_KEY }}
+          name: id_ecdsa
+          known_hosts: ${{ secrets.PACKAGES_KNOWN_HOSTS }}
+      - name: Sync newer releases
+        id: sync-releases
+        if: github.event_name == 'workflow_dispatch' && github.repository == 'netdata/netdata' && steps.check-latest-version.outputs.versions_needs_update == 'true'
+        run: |
+          .github/scripts/upload-new-version-tags.sh
       - name: Failure Notification
         uses: rtCamp/action-slack-notify@v2
         env:
@@ -880,6 +896,12 @@ jobs:
               Fetch artifacts: ${{ steps.fetch.outcome }}
               Prepare version info: ${{ steps.version.outcome }}
               Create release: ${{ steps.create-release.outcome }}
+              Checkout back netdata/netdata: ${{ steps.checkout-netdata.outcome }}
+              Init python environment: ${{ steps.init-python.outcome }}
+              Setup python environment: ${{ steps.setup-python.outcome }}
+              Check the nearly published release against the advertised: ${{ steps.check-latest-version.outcome }}
+              Setup ssh: ${{ steps.ssh-setup.outcome }}
+              Sync with the releases: ${{ steps.sync-releases.outcome }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
         if: >-
           ${{

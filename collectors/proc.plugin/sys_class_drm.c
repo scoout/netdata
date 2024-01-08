@@ -648,13 +648,17 @@ static int read_clk_freq_file(procfile **p_ff, const char *const pathname, colle
         *p_ff = procfile_open(pathname, NULL, PROCFILE_FLAG_NO_ERROR_ON_FILE_IO);
         if(unlikely(!*p_ff)) return -2;
     }
-    
+
     if(unlikely(NULL == (*p_ff = procfile_readall(*p_ff)))) return -3;
 
     for(size_t l = 0; l < procfile_lines(*p_ff) ; l++) {
+        char *str_with_units = NULL;
+        if((*p_ff)->lines->lines[l].words >= 3 && !strcmp(procfile_lineword((*p_ff), l, 2), "*")) //format: X: collected_number *
+            str_with_units = procfile_lineword((*p_ff), l, 1);
+        else if ((*p_ff)->lines->lines[l].words == 2 && !strcmp(procfile_lineword((*p_ff), l, 1), "*")) //format:   collected_number *
+            str_with_units = procfile_lineword((*p_ff), l, 0);
 
-        if((*p_ff)->lines->lines[l].words >= 3 && !strcmp(procfile_lineword((*p_ff), l, 2), "*")){
-            char *str_with_units = procfile_lineword((*p_ff), l, 1);
+        if (str_with_units) {
             char *delim = strchr(str_with_units, 'M');
             char str_without_units[10];
             memcpy(str_without_units, str_with_units, delim - str_with_units);
@@ -881,14 +885,14 @@ int do_sys_class_drm(int update_every, usec_t dt) {
 
 
                 collected_number tmp_val; 
-                #define set_prop_pathname(prop_filename, prop_pathname, p_ff){                  \
+                #define set_prop_pathname(prop_filename, prop_pathname, p_ff) do {              \
                     snprintfz(filename, FILENAME_MAX, "%s/%s", c->pathname, prop_filename);     \
                     if((p_ff && !read_clk_freq_file(p_ff, filename, &tmp_val)) ||               \
                           !read_single_number_file(filename, (unsigned long long *) &tmp_val))  \
                         prop_pathname = strdupz(filename);                                      \
                     else                                                                        \
                         collector_info("Cannot read file '%s'", filename);                      \
-                }
+                } while(0)
 
                 /* Initialize GPU and VRAM utilization metrics */
 

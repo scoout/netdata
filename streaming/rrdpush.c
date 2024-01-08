@@ -57,12 +57,12 @@ static void load_stream_conf() {
     errno = 0;
     char *filename = strdupz_path_subpath(netdata_configured_user_config_dir, "stream.conf");
     if(!appconfig_load(&stream_config, filename, 0, NULL)) {
-        netdata_log_info("CONFIG: cannot load user config '%s'. Will try stock config.", filename);
+        nd_log_daemon(NDLP_NOTICE, "CONFIG: cannot load user config '%s'. Will try stock config.", filename);
         freez(filename);
 
         filename = strdupz_path_subpath(netdata_configured_stock_config_dir, "stream.conf");
         if(!appconfig_load(&stream_config, filename, 0, NULL))
-            netdata_log_info("CONFIG: cannot load stock config '%s'. Running with internal defaults.", filename);
+            nd_log_daemon(NDLP_NOTICE, "CONFIG: cannot load stock config '%s'. Running with internal defaults.", filename);
     }
     freez(filename);
 }
@@ -128,7 +128,7 @@ int rrdpush_init() {
             rrdpush_compression_levels[COMPRESSION_ALGORITHM_GZIP]);
 
     if(default_rrdpush_enabled && (!default_rrdpush_destination || !*default_rrdpush_destination || !default_rrdpush_api_key || !*default_rrdpush_api_key)) {
-        netdata_log_error("STREAM [send]: cannot enable sending thread - information is missing.");
+        nd_log_daemon(NDLP_WARNING, "STREAM [send]: cannot enable sending thread - information is missing.");
         default_rrdpush_enabled = 0;
     }
 
@@ -136,7 +136,7 @@ int rrdpush_init() {
     netdata_ssl_validate_certificate_sender = !appconfig_get_boolean(&stream_config, CONFIG_SECTION_STREAM, "ssl skip certificate verification", !netdata_ssl_validate_certificate);
 
     if(!netdata_ssl_validate_certificate_sender)
-        netdata_log_info("SSL: streaming senders will skip SSL certificates verification.");
+        nd_log_daemon(NDLP_NOTICE, "SSL: streaming senders will skip SSL certificates verification.");
 
     netdata_ssl_ca_path = appconfig_get(&stream_config, CONFIG_SECTION_STREAM, "CApath", NULL);
     netdata_ssl_ca_file = appconfig_get(&stream_config, CONFIG_SECTION_STREAM, "CAfile", NULL);
@@ -208,14 +208,14 @@ int configured_as_parent() {
 // chart labels
 static int send_clabels_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
     BUFFER *wb = (BUFFER *)data;
-    buffer_sprintf(wb, "CLABEL \"%s\" \"%s\" %d\n", name, value, ls & ~(RRDLABEL_FLAG_INTERNAL));
+    buffer_sprintf(wb, PLUGINSD_KEYWORD_CLABEL " \"%s\" \"%s\" %d\n", name, value, ls & ~(RRDLABEL_FLAG_INTERNAL));
     return 1;
 }
 
 static void rrdpush_send_clabels(BUFFER *wb, RRDSET *st) {
     if (st->rrdlabels) {
         if(rrdlabels_walkthrough_read(st->rrdlabels, send_clabels_callback, wb) > 0)
-            buffer_sprintf(wb, "CLABEL_COMMIT\n");
+            buffer_sprintf(wb, PLUGINSD_KEYWORD_CLABEL_COMMIT "\n");
     }
 }
 
@@ -485,20 +485,11 @@ void rrdset_push_metrics_finished(RRDSET_STREAM_BUFFER *rsb, RRDSET *st) {
     *rsb = (RRDSET_STREAM_BUFFER){ .wb = NULL, };
 }
 
-// TODO enable this macro before release
-#define bail_if_no_cap(cap) \
-    if(unlikely(!stream_has_capability(host->sender, cap))) { \
-        return; \
-    }
-
-#define dyncfg_check_can_push(host) \
-    if(unlikely(!rrdhost_can_send_definitions_to_parent(host))) \
-        return; \
-    bail_if_no_cap(STREAM_CAP_DYNCFG)
+#define dyncfg_can_push(host) (rrdhost_can_send_definitions_to_parent(host) && stream_has_capability((host)->sender, STREAM_CAP_DYNCFG))
 
 // assumes job is locked and acquired!!!
 void rrdpush_send_job_status_update(RRDHOST *host, const char *plugin_name, const char *module_name, struct job *job) {
-    dyncfg_check_can_push(host);
+    if(!dyncfg_can_push(host)) return;
 
     BUFFER *wb = sender_start(host->sender);
 
@@ -517,7 +508,7 @@ void rrdpush_send_job_status_update(RRDHOST *host, const char *plugin_name, cons
 }
 
 void rrdpush_send_job_deleted(RRDHOST *host, const char *plugin_name, const char *module_name, const char *job_name) {
-    dyncfg_check_can_push(host);
+    if(!dyncfg_can_push(host)) return;
 
     BUFFER *wb = sender_start(host->sender);
 
@@ -542,13 +533,13 @@ RRDSET_STREAM_BUFFER rrdset_push_metric_initialize(RRDSET *st, time_t wall_clock
 
         if(unlikely(!(host_flags & RRDHOST_FLAG_RRDPUSH_SENDER_LOGGED_STATUS))) {
             rrdhost_flag_set(host, RRDHOST_FLAG_RRDPUSH_SENDER_LOGGED_STATUS);
-            netdata_log_error("STREAM %s [send]: not ready - collected metrics are not sent to parent.", rrdhost_hostname(host));
+            nd_log_daemon(NDLP_NOTICE, "STREAM %s [send]: not ready - collected metrics are not sent to parent.", rrdhost_hostname(host));
         }
 
         return (RRDSET_STREAM_BUFFER) { .wb = NULL, };
     }
     else if(unlikely(host_flags & RRDHOST_FLAG_RRDPUSH_SENDER_LOGGED_STATUS)) {
-        netdata_log_info("STREAM %s [send]: sending metrics to parent...", rrdhost_hostname(host));
+        nd_log_daemon(NDLP_INFO, "STREAM %s [send]: sending metrics to parent...", rrdhost_hostname(host));
         rrdhost_flag_clear(host, RRDHOST_FLAG_RRDPUSH_SENDER_LOGGED_STATUS);
     }
 
@@ -622,7 +613,7 @@ void rrdpush_send_global_functions(RRDHOST *host) {
 }
 
 void rrdpush_send_dyncfg(RRDHOST *host) {
-    dyncfg_check_can_push(host);
+    if(!dyncfg_can_push(host)) return;
 
     BUFFER *wb = sender_start(host->sender);
 
@@ -654,9 +645,8 @@ void rrdpush_send_dyncfg(RRDHOST *host) {
     sender_thread_buffer_free();
 }
 
-void rrdpush_send_dyncfg_enable(RRDHOST *host, const char *plugin_name)
-{
-    dyncfg_check_can_push(host);
+void rrdpush_send_dyncfg_enable(RRDHOST *host, const char *plugin_name) {
+    if(!dyncfg_can_push(host)) return;
 
     BUFFER *wb = sender_start(host->sender);
 
@@ -667,9 +657,8 @@ void rrdpush_send_dyncfg_enable(RRDHOST *host, const char *plugin_name)
     sender_thread_buffer_free();
 }
 
-void rrdpush_send_dyncfg_reg_module(RRDHOST *host, const char *plugin_name, const char *module_name, enum module_type type)
-{
-    dyncfg_check_can_push(host);
+void rrdpush_send_dyncfg_reg_module(RRDHOST *host, const char *plugin_name, const char *module_name, enum module_type type) {
+    if(!dyncfg_can_push(host)) return;
 
     BUFFER *wb = sender_start(host->sender);
 
@@ -680,9 +669,8 @@ void rrdpush_send_dyncfg_reg_module(RRDHOST *host, const char *plugin_name, cons
     sender_thread_buffer_free();
 }
 
-void rrdpush_send_dyncfg_reg_job(RRDHOST *host, const char *plugin_name, const char *module_name, const char *job_name, enum job_type type, uint32_t flags)
-{
-    dyncfg_check_can_push(host);
+void rrdpush_send_dyncfg_reg_job(RRDHOST *host, const char *plugin_name, const char *module_name, const char *job_name, enum job_type type, uint32_t flags) {
+    if(!dyncfg_can_push(host)) return;
 
     BUFFER *wb = sender_start(host->sender);
 
@@ -693,9 +681,8 @@ void rrdpush_send_dyncfg_reg_job(RRDHOST *host, const char *plugin_name, const c
     sender_thread_buffer_free();
 }
 
-void rrdpush_send_dyncfg_reset(RRDHOST *host, const char *plugin_name)
-{
-    dyncfg_check_can_push(host);
+void rrdpush_send_dyncfg_reset(RRDHOST *host, const char *plugin_name) {
+    if(!dyncfg_can_push(host)) return;
 
     BUFFER *wb = sender_start(host->sender);
 
@@ -741,11 +728,9 @@ int connect_to_one_of_destinations(
         if(d->postpone_reconnection_until > now)
             continue;
 
-        internal_error(true,
+        nd_log(NDLS_DAEMON, NDLP_DEBUG,
             "STREAM %s: connecting to '%s' (default port: %d)...",
-            rrdhost_hostname(host),
-            string2str(d->destination),
-            default_port);
+            rrdhost_hostname(host), string2str(d->destination), default_port);
 
         if (reconnects_counter)
             *reconnects_counter += 1;
@@ -798,7 +783,7 @@ bool destinations_init_add_one(char *entry, void *data) {
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(t->list, d, prev, next);
 
     t->count++;
-    netdata_log_info("STREAM: added streaming destination No %d: '%s' to host '%s'", t->count, string2str(d->destination), rrdhost_hostname(t->host));
+    nd_log_daemon(NDLP_INFO, "STREAM: added streaming destination No %d: '%s' to host '%s'", t->count, string2str(d->destination), rrdhost_hostname(t->host));
 
     return false; // we return false, so that we will get all defined destinations
 }
@@ -867,11 +852,6 @@ void rrdpush_sender_thread_stop(RRDHOST *host, STREAM_HANDSHAKE reason, bool wai
 // ----------------------------------------------------------------------------
 // rrdpush receiver thread
 
-void log_stream_connection(const char *client_ip, const char *client_port, const char *api_key, const char *machine_guid, const char *host, const char *msg) {
-    netdata_log_access("STREAM: %d '[%s]:%s' '%s' host '%s' api key '%s' machine guid '%s'", gettid(), client_ip, client_port, msg, host, api_key, machine_guid);
-}
-
-
 static void rrdpush_sender_thread_spawn(RRDHOST *host) {
     sender_lock(host->sender);
 
@@ -880,7 +860,7 @@ static void rrdpush_sender_thread_spawn(RRDHOST *host) {
         snprintfz(tag, NETDATA_THREAD_TAG_MAX, THREAD_TAG_STREAM_SENDER "[%s]", rrdhost_hostname(host));
 
         if(netdata_thread_create(&host->rrdpush_sender_thread, tag, NETDATA_THREAD_OPTION_DEFAULT, rrdpush_sender_thread, (void *) host->sender))
-            netdata_log_error("STREAM %s [send]: failed to create new thread for client.", rrdhost_hostname(host));
+            nd_log_daemon(NDLP_ERR, "STREAM %s [send]: failed to create new thread for client.", rrdhost_hostname(host));
         else
             rrdhost_flag_set(host, RRDHOST_FLAG_RRDPUSH_SENDER_SPAWN);
     }
@@ -1040,7 +1020,7 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
                 rpt->capabilities = convert_stream_version_to_capabilities(1, NULL, false);
 
             if (unlikely(rrdhost_set_system_info_variable(rpt->system_info, name, value))) {
-                netdata_log_info("STREAM '%s' [receive from [%s]:%s]: "
+                nd_log_daemon(NDLP_NOTICE, "STREAM '%s' [receive from [%s]:%s]: "
                      "request has parameter '%s' = '%s', which is not used."
                      , (rpt->hostname && *rpt->hostname) ? rpt->hostname : "-"
                      , rpt->client_ip, rpt->client_port
@@ -1069,9 +1049,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
     if(!rpt->key || !*rpt->key) {
         rrdpush_receive_log_status(
-                rpt,
-                "request without an API key",
-                "NO API KEY PERMISSION DENIED");
+                rpt, "request without an API key, rejecting connection",
+                RRDPUSH_STATUS_NO_API_KEY, NDLP_WARNING);
 
         receiver_state_free(rpt);
         return rrdpush_receiver_permission_denied(w);
@@ -1079,9 +1058,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
     if(!rpt->hostname || !*rpt->hostname) {
         rrdpush_receive_log_status(
-                rpt,
-                "request without a hostname",
-                "NO HOSTNAME PERMISSION DENIED");
+                rpt, "request without a hostname, rejecting connection",
+                RRDPUSH_STATUS_NO_HOSTNAME, NDLP_WARNING);
 
         receiver_state_free(rpt);
         return rrdpush_receiver_permission_denied(w);
@@ -1092,9 +1070,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
     if(!rpt->machine_guid || !*rpt->machine_guid) {
         rrdpush_receive_log_status(
-                rpt,
-                "request without a machine GUID",
-                "NO MACHINE GUID PERMISSION DENIED");
+                rpt, "request without a machine GUID, rejecting connection",
+                RRDPUSH_STATUS_NO_MACHINE_GUID, NDLP_WARNING);
 
         receiver_state_free(rpt);
         return rrdpush_receiver_permission_denied(w);
@@ -1105,9 +1082,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
         if (regenerate_guid(rpt->key, buf) == -1) {
             rrdpush_receive_log_status(
-                    rpt,
-                    "API key is not a valid UUID (use the command uuidgen to generate one)",
-                    "INVALID API KEY PERMISSION DENIED");
+                    rpt, "API key is not a valid UUID (use the command uuidgen to generate one)",
+                    RRDPUSH_STATUS_INVALID_API_KEY, NDLP_WARNING);
 
             receiver_state_free(rpt);
             return rrdpush_receiver_permission_denied(w);
@@ -1115,9 +1091,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
         if (regenerate_guid(rpt->machine_guid, buf) == -1) {
             rrdpush_receive_log_status(
-                    rpt,
-                    "machine GUID is not a valid UUID",
-                    "INVALID MACHINE GUID PERMISSION DENIED");
+                    rpt, "machine GUID is not a valid UUID",
+                    RRDPUSH_STATUS_INVALID_MACHINE_GUID, NDLP_WARNING);
 
             receiver_state_free(rpt);
             return rrdpush_receiver_permission_denied(w);
@@ -1128,9 +1103,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
     if(!api_key_type || !*api_key_type) api_key_type = "unknown";
     if(strcmp(api_key_type, "api") != 0) {
         rrdpush_receive_log_status(
-                rpt,
-                "API key is a machine GUID",
-                "INVALID API KEY PERMISSION DENIED");
+                rpt, "API key is a machine GUID",
+                RRDPUSH_STATUS_INVALID_API_KEY, NDLP_WARNING);
 
         receiver_state_free(rpt);
         return rrdpush_receiver_permission_denied(w);
@@ -1138,9 +1112,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
     if(!appconfig_get_boolean(&stream_config, rpt->key, "enabled", 0)) {
         rrdpush_receive_log_status(
-                rpt,
-                "API key is not enabled",
-                "API KEY DISABLED PERMISSION DENIED");
+                rpt, "API key is not enabled",
+                RRDPUSH_STATUS_API_KEY_DISABLED, NDLP_WARNING);
 
         receiver_state_free(rpt);
         return rrdpush_receiver_permission_denied(w);
@@ -1156,9 +1129,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
                 simple_pattern_free(key_allow_from);
 
                 rrdpush_receive_log_status(
-                        rpt,
-                        "API key is not allowed from this IP",
-                        "NOT ALLOWED IP PERMISSION DENIED");
+                        rpt, "API key is not allowed from this IP",
+                        RRDPUSH_STATUS_NOT_ALLOWED_IP, NDLP_WARNING);
 
                 receiver_state_free(rpt);
                 return rrdpush_receiver_permission_denied(w);
@@ -1174,9 +1146,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
         if (strcmp(machine_guid_type, "machine") != 0) {
             rrdpush_receive_log_status(
-                    rpt,
-                    "machine GUID is an API key",
-                    "INVALID MACHINE GUID PERMISSION DENIED");
+                    rpt, "machine GUID is an API key",
+                    RRDPUSH_STATUS_INVALID_MACHINE_GUID, NDLP_WARNING);
 
             receiver_state_free(rpt);
             return rrdpush_receiver_permission_denied(w);
@@ -1185,9 +1156,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
     if(!appconfig_get_boolean(&stream_config, rpt->machine_guid, "enabled", 1)) {
         rrdpush_receive_log_status(
-                rpt,
-                "machine GUID is not enabled",
-                "MACHINE GUID DISABLED PERMISSION DENIED");
+                rpt, "machine GUID is not enabled",
+                RRDPUSH_STATUS_MACHINE_GUID_DISABLED, NDLP_WARNING);
 
         receiver_state_free(rpt);
         return rrdpush_receiver_permission_denied(w);
@@ -1203,9 +1173,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
                 simple_pattern_free(machine_allow_from);
 
                 rrdpush_receive_log_status(
-                        rpt,
-                        "machine GUID is not allowed from this IP",
-                        "NOT ALLOWED IP PERMISSION DENIED");
+                        rpt, "machine GUID is not allowed from this IP",
+                        RRDPUSH_STATUS_NOT_ALLOWED_IP, NDLP_WARNING);
 
                 receiver_state_free(rpt);
                 return rrdpush_receiver_permission_denied(w);
@@ -1220,9 +1189,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
         rrdpush_receiver_takeover_web_connection(w, rpt);
 
         rrdpush_receive_log_status(
-                rpt,
-                "machine GUID is my own",
-                "LOCALHOST PERMISSION DENIED");
+                rpt, "machine GUID is my own",
+                RRDPUSH_STATUS_LOCALHOST, NDLP_DEBUG);
 
         char initial_response[HTTP_HEADER_SIZE + 1];
         snprintfz(initial_response, HTTP_HEADER_SIZE, "%s", START_STREAMING_ERROR_SAME_LOCALHOST);
@@ -1233,11 +1201,11 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 #endif
                 rpt->fd, initial_response, strlen(initial_response), 0, 60) != (ssize_t)strlen(initial_response)) {
 
-            netdata_log_error("STREAM '%s' [receive from [%s]:%s]: "
-                  "failed to reply."
-                  , rpt->hostname
-                  , rpt->client_ip, rpt->client_port
-            );
+            nd_log_daemon(NDLP_ERR, "STREAM '%s' [receive from [%s]:%s]: "
+                                    "failed to reply."
+                                    , rpt->hostname
+                                    , rpt->client_ip, rpt->client_port
+                                    );
         }
 
         receiver_state_free(rpt);
@@ -1258,14 +1226,13 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
             spinlock_unlock(&spinlock);
 
             char msg[100 + 1];
-            snprintfz(msg, 100,
+            snprintfz(msg, sizeof(msg) - 1,
                       "rate limit, will accept new connection in %ld secs",
                       (long)(web_client_streaming_rate_t - (now - last_stream_accepted_t)));
 
             rrdpush_receive_log_status(
-                    rpt,
-                    msg,
-                    "RATE LIMIT TRY LATER");
+                    rpt, msg,
+                    RRDPUSH_STATUS_RATE_LIMIT, NDLP_NOTICE);
 
             receiver_state_free(rpt);
             return rrdpush_receiver_too_busy_now(w);
@@ -1313,29 +1280,26 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
             // we can proceed with this connection
             receiver_stale = false;
 
-            netdata_log_info("STREAM '%s' [receive from [%s]:%s]: "
-                 "stopped previous stale receiver to accept this one."
-                 , rpt->hostname
-                 , rpt->client_ip, rpt->client_port
-            );
+            nd_log_daemon(NDLP_NOTICE, "STREAM '%s' [receive from [%s]:%s]: "
+                                       "stopped previous stale receiver to accept this one."
+                                       , rpt->hostname
+                                       , rpt->client_ip, rpt->client_port
+                                       );
         }
 
         if (receiver_working || receiver_stale) {
             // another receiver is already connected
             // try again later
 
-#ifdef NETDATA_INTERNAL_CHECKS
             char msg[200 + 1];
-            snprintfz(msg, 200,
+            snprintfz(msg, sizeof(msg) - 1,
                       "multiple connections for same host, "
-                      "old connection was used %ld secs ago%s",
+                      "old connection was last used %ld secs ago%s",
                       age, receiver_stale ? " (signaled old receiver to stop)" : " (new connection not accepted)");
 
             rrdpush_receive_log_status(
-                    rpt,
-                    msg,
-                    "ALREADY CONNECTED");
-#endif
+                    rpt, msg,
+                    RRDPUSH_STATUS_ALREADY_CONNECTED, NDLP_DEBUG);
 
             // Have not set WEB_CLIENT_FLAG_DONT_CLOSE_SOCKET - caller should clean up
             buffer_flush(w->response.data);
@@ -1345,8 +1309,6 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
         }
     }
 
-    netdata_log_debug(D_SYSTEM, "starting STREAM receive thread.");
-
     rrdpush_receiver_takeover_web_connection(w, rpt);
 
     char tag[NETDATA_THREAD_TAG_MAX + 1];
@@ -1355,9 +1317,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
 
     if(netdata_thread_create(&rpt->thread, tag, NETDATA_THREAD_OPTION_DEFAULT, rrdpush_receiver_thread, (void *)rpt)) {
         rrdpush_receive_log_status(
-                rpt,
-                "can't create receiver thread",
-                "INTERNAL SERVER ERROR");
+                rpt, "can't create receiver thread",
+                RRDPUSH_STATUS_INTERNAL_SERVER_ERROR, NDLP_ERR);
 
         buffer_flush(w->response.data);
         buffer_strcat(w->response.data, "Can't handle this request");
@@ -1449,10 +1410,11 @@ static struct {
     {STREAM_CAP_ZSTD,         "ZSTD" },
     {STREAM_CAP_GZIP,         "GZIP" },
     {STREAM_CAP_BROTLI,       "BROTLI" },
+    {STREAM_CAP_PROGRESS,     "PROGRESS" },
     {0 , NULL },
 };
 
-static void stream_capabilities_to_string(BUFFER *wb, STREAM_CAPABILITIES caps) {
+void stream_capabilities_to_string(BUFFER *wb, STREAM_CAPABILITIES caps) {
     for(size_t i = 0; capability_names[i].str ; i++) {
         if(caps & capability_names[i].cap) {
             buffer_strcat(wb, capability_names[i].str);
@@ -1479,8 +1441,8 @@ void log_receiver_capabilities(struct receiver_state *rpt) {
     BUFFER *wb = buffer_create(100, NULL);
     stream_capabilities_to_string(wb, rpt->capabilities);
 
-    netdata_log_info("STREAM %s [receive from [%s]:%s]: established link with negotiated capabilities: %s",
-         rrdhost_hostname(rpt->host), rpt->client_ip, rpt->client_port, buffer_tostring(wb));
+    nd_log_daemon(NDLP_INFO, "STREAM %s [receive from [%s]:%s]: established link with negotiated capabilities: %s",
+                  rrdhost_hostname(rpt->host), rpt->client_ip, rpt->client_port, buffer_tostring(wb));
 
     buffer_free(wb);
 }
@@ -1489,8 +1451,8 @@ void log_sender_capabilities(struct sender_state *s) {
     BUFFER *wb = buffer_create(100, NULL);
     stream_capabilities_to_string(wb, s->capabilities);
 
-    netdata_log_info("STREAM %s [send to %s]: established link with negotiated capabilities: %s",
-         rrdhost_hostname(s->host), s->connected_to, buffer_tostring(wb));
+    nd_log_daemon(NDLP_INFO, "STREAM %s [send to %s]: established link with negotiated capabilities: %s",
+                  rrdhost_hostname(s->host), s->connected_to, buffer_tostring(wb));
 
     buffer_free(wb);
 }
@@ -1524,7 +1486,7 @@ STREAM_CAPABILITIES stream_our_capabilities(RRDHOST *host, bool sender) {
             STREAM_CAP_REPLICATION |
             STREAM_CAP_BINARY |
             STREAM_CAP_INTERPOLATED |
-            STREAM_CAP_SLOTS |
+            STREAM_CAP_SLOTS | STREAM_CAP_PROGRESS |
             STREAM_CAP_COMPRESSIONS_AVAILABLE |
             #ifdef NETDATA_TEST_DYNCFG
             STREAM_CAP_DYNCFG |

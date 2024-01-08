@@ -294,7 +294,7 @@ typedef DICTFE_CONST struct dictionary_foreach {
             DICTFE value ## _dfe = {};                                                              \
             (void)(value); /* needed to avoid warning when looping without using this */            \
             for((value) = dictionary_foreach_start_rw(&value ## _dfe, (dict), (mode));              \
-                (value ## _dfe.item) ;                                                              \
+                (value ## _dfe.item) || (value) ;                                                   \
                 (value) = dictionary_foreach_next(&value ## _dfe))                                  \
             {
 
@@ -303,7 +303,7 @@ typedef DICTFE_CONST struct dictionary_foreach {
             dictionary_foreach_done(&value ## _dfe);                                                \
         } while(0)
 
-#define dfe_unlock(value) dictionary_foreach_unlock(&value ## _dfe);
+#define dfe_unlock(value) dictionary_foreach_unlock(&value ## _dfe)
 
 void *dictionary_foreach_start_rw(DICTFE *dfe, DICTIONARY *dict, char rw);
 void *dictionary_foreach_next(DICTFE *dfe);

@@ -30,15 +30,6 @@
 
 <hr class="solid">
 
-<p align="center">
-<a href="https://www.netdata.cloud#gh-light-mode-only">
-  <img src="https://www.netdata.cloud/img/readme-images/srecon_light.png" alt="ObservabilityCon23" width="600"/>
-</a>
-<a href="https://www.netdata.cloud#gh-dark-mode-only">
-  <img src="https://www.netdata.cloud/img/readme-images/srecon_dark.png" alt="ObservabilityCon23" width="600"/>
-</a>
-</p>
-
 MENU: **[WHAT IS NEW](#whats-new-and-coming)** | **[GETTING STARTED](#getting-started)** | **[HOW IT WORKS](#how-it-works)** | **[FAQ](#faq)** | **[DOCS](#book-documentation)** | **[COMMUNITY](#tada-community)** | **[CONTRIBUTE](#pray-contribute)**
 
 Netdata collects metrics per second and presents them in beautiful low-latency dashboards. It is designed to run on all of your physical and virtual servers, cloud deployments, Kubernetes clusters, and edge/IoT devices, to monitor your systems, containers, and applications.
@@ -70,6 +61,32 @@ It scales nicely from just a single server to thousands of servers, even in comp
 
 - :star: **Open and Extensible**<br/>
   Netdata is a modular platform that can be extended in all possible ways and it also integrates nicely with other monitoring solutions.
+
+---
+<p align="center">
+<a href="https://www.ivanomalavolta.com/files/papers/ICSOC_2023.pdf#gh-dark-mode-only">
+  <img src="https://www.netdata.cloud/img/readme-images/Energy-efficiency.jpg" alt="Energy Efficiency" width="850"/>
+</a>
+<a href="https://www.ivanomalavolta.com/files/papers/ICSOC_2023.pdf#gh-light-mode-only">
+  <img src="https://www.netdata.cloud/img/readme-images/Energy-efficiency-light.jpg" alt="Energy efficiency" width="850"/>
+</a>
+</p>
+
+:star: **Netdata is the most energy-efficient monitoring tool for Docker-based systems** :star: <br/>
+
+Dec 11, 2023: [University of Amsterdam published a study](https://twitter.com/IMalavolta/status/1734208439096676680) related to the impact of monitoring tools for Docker based systems, aiming to answer 2 questions:
+
+1. **What is the impact of monitoring tools on the energy efficiency of Docker-based systems?**
+2. **What is the impact of monitoring tools on the performance of Docker-based systems?**
+
+They tested ELK, Prometheus, Netdata and Zipkin, under 9 different configurations (Low, Mid, High Frequency vs. Low, Mid, High Workload, 3x3).
+
+This is how Netdata stands:
+
+- 🚀 Netdata excels in energy efficiency: **"... Netdata being the most energy-efficient tool ..."**, as the study says.
+- 🚀 Netdata excels in CPU Usage, RAM Usage and Execution Time, and has a similar impact in Network Traffic as Prometheus.
+
+The study did not normalize the results based on the number of metrics collected. Given that Netdata usually collects singificantly more metrics than the other tools, Netdata managed to outperform the other tools, while ingesting a much higher number of metrics. [Read the full study here](https://www.ivanomalavolta.com/files/papers/ICSOC_2023.pdf).
 
 ---
 
@@ -466,6 +483,8 @@ Using the above, the Netdata Agent on your production system will not use a disk
 ### :raised_eyebrow: How is Netdata different from a Prometheus and Grafana setup?
 
 Netdata is a "ready to use" monitoring solution. Prometheus and Grafana are tools to build your own monitoring solution.
+
+Netdata is also a lot faster, requires singificantly less resources and puts almost no stress on the server it runs. For a performance comparison check [this blog](https://blog.netdata.cloud/netdata-vs-prometheus-performance-analysis/).
 
 <details><summary>Click to see detailed answer ...</summary>
 &nbsp;<br/>&nbsp;<br/>

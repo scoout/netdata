@@ -11,10 +11,6 @@ extern "C" {
 #include <config.h>
 #endif
 
-#if defined(ENABLE_BROTLIENC) && defined(ENABLE_BROTLIDEC)
-#define ENABLE_BROTLI 1
-#endif
-
 #ifdef ENABLE_OPENSSL
 #define ENABLE_HTTPS 1
 #endif
@@ -32,6 +28,10 @@ extern "C" {
 #define NETDATA_INTERNAL_CHECKS 1
 #endif
 
+#ifndef SIZEOF_VOID_P
+#error SIZEOF_VOID_P is not defined
+#endif
+
 #if SIZEOF_VOID_P == 4
 #define ENV32BIT 1
 #else
@@ -42,10 +42,6 @@ extern "C" {
 //#if defined(NETDATA_INTERNAL_CHECKS) && !defined(NETDATA_TRACE_ALLOCATIONS)
 //#define NETDATA_TRACE_ALLOCATIONS 1
 //#endif
-
-#define OS_LINUX   1
-#define OS_FREEBSD 2
-#define OS_MACOS   3
 
 #define MALLOC_ALIGNMENT (sizeof(uintptr_t) * 2)
 #define size_t_atomic_count(op, var, size) __atomic_## op ##_fetch(&(var), size, __ATOMIC_RELAXED)
@@ -193,7 +189,7 @@ extern "C" {
 
 #include <zlib.h>
 
-#ifdef HAVE_CAPABILITY
+#ifdef HAVE_SYS_CAPABILITY_H
 #include <sys/capability.h>
 #endif
 
@@ -201,9 +197,7 @@ extern "C" {
 // ----------------------------------------------------------------------------
 // netdata common definitions
 
-#ifdef __GNUC__
-#define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
-#endif // __GNUC__
+#define _cleanup_(x) __attribute__((__cleanup__(x)))
 
 #ifdef HAVE_FUNC_ATTRIBUTE_RETURNS_NONNULL
 #define NEVERNULL __attribute__((returns_nonnull))
@@ -685,105 +679,9 @@ static inline BITMAPX *bitmapX_create(uint32_t bits) {
 #define COMPRESSION_MAX_OVERHEAD 128
 #define COMPRESSION_MAX_MSG_SIZE (COMPRESSION_MAX_CHUNK - COMPRESSION_MAX_OVERHEAD - 1)
 #define PLUGINSD_LINE_MAX (COMPRESSION_MAX_MSG_SIZE - 768)
-int pluginsd_isspace(char c);
-int config_isspace(char c);
-int group_by_label_isspace(char c);
-
-extern bool isspace_map_pluginsd[256];
-extern bool isspace_map_config[256];
-extern bool isspace_map_group_by_label[256];
-
-static inline size_t quoted_strings_splitter(char *str, char **words, size_t max_words, bool *isspace_map) {
-    char *s = str, quote = 0;
-    size_t i = 0;
-
-    // skip all white space
-    while (unlikely(isspace_map[(uint8_t)*s]))
-        s++;
-
-    if(unlikely(!*s)) {
-        words[i] = NULL;
-        return 0;
-    }
-
-    // check for quote
-    if (unlikely(*s == '\'' || *s == '"')) {
-        quote = *s; // remember the quote
-        s++;        // skip the quote
-    }
-
-    // store the first word
-    words[i++] = s;
-
-    // while we have something
-    while (likely(*s)) {
-        // if it is an escape
-        if (unlikely(*s == '\\' && s[1])) {
-            s += 2;
-            continue;
-        }
-
-        // if it is a quote
-        else if (unlikely(*s == quote)) {
-            quote = 0;
-            *s = ' ';
-            continue;
-        }
-
-        // if it is a space
-        else if (unlikely(quote == 0 && isspace_map[(uint8_t)*s])) {
-            // terminate the word
-            *s++ = '\0';
-
-            // skip all white space
-            while (likely(isspace_map[(uint8_t)*s]))
-                s++;
-
-            // check for a quote
-            if (unlikely(*s == '\'' || *s == '"')) {
-                quote = *s; // remember the quote
-                s++;        // skip the quote
-            }
-
-            // if we reached the end, stop
-            if (unlikely(!*s))
-                break;
-
-            // store the next word
-            if (likely(i < max_words))
-                words[i++] = s;
-            else
-                break;
-        }
-
-        // anything else
-        else
-            s++;
-    }
-
-    if (likely(i < max_words))
-        words[i] = NULL;
-
-    return i;
-}
-
-#define quoted_strings_splitter_query_group_by_label(str, words, max_words) \
-        quoted_strings_splitter(str, words, max_words, isspace_map_group_by_label)
-
-#define quoted_strings_splitter_config(str, words, max_words) \
-        quoted_strings_splitter(str, words, max_words, isspace_map_config)
-
-#define quoted_strings_splitter_pluginsd(str, words, max_words) \
-        quoted_strings_splitter(str, words, max_words, isspace_map_pluginsd)
-
-static inline char *get_word(char **words, size_t num_words, size_t index) {
-    if (unlikely(index >= num_words))
-        return NULL;
-
-    return words[index];
-}
 
 bool run_command_and_copy_output_to_stdout(const char *command, int max_line_length);
+struct web_buffer *run_command_and_get_output_to_buffer(const char *command, int max_line_length);
 
 typedef enum {
     OPEN_FD_ACTION_CLOSE,
@@ -796,13 +694,14 @@ typedef enum {
 } OPEN_FD_EXCLUDE;
 void for_each_open_fd(OPEN_FD_ACTION action, OPEN_FD_EXCLUDE excluded_fds);
 
-void netdata_cleanup_and_exit(int ret) NORETURN;
-void send_statistics(const char *action, const char *action_result, const char *action_data);
+void netdata_cleanup_and_exit(int ret, const char *action, const char *action_result, const char *action_data) NORETURN;
 extern char *netdata_configured_host_prefix;
 
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
+#include "uuid/uuid.h"
+#include "http/http_access.h"
 #include "libjudy/src/Judy.h"
 #include "july/july.h"
 #include "os.h"
@@ -812,7 +711,11 @@ extern char *netdata_configured_host_prefix;
 #include "circular_buffer/circular_buffer.h"
 #include "avl/avl.h"
 #include "inlined.h"
+#include "line_splitter/line_splitter.h"
 #include "clocks/clocks.h"
+#include "datetime/iso8601.h"
+#include "datetime/rfc3339.h"
+#include "datetime/rfc7231.h"
 #include "completion/completion.h"
 #include "popen/popen.h"
 #include "simple_pattern/simple_pattern.h"
@@ -821,7 +724,9 @@ extern char *netdata_configured_host_prefix;
 #endif
 #include "socket/socket.h"
 #include "config/appconfig.h"
+#include "log/journal.h"
 #include "log/log.h"
+#include "buffered_reader/buffered_reader.h"
 #include "procfile/procfile.h"
 #include "string/string.h"
 #include "dictionary/dictionary.h"
@@ -844,6 +749,7 @@ extern char *netdata_configured_host_prefix;
 #include "facets/facets.h"
 #include "dyn_conf/dyn_conf.h"
 #include "functions_evloop/functions_evloop.h"
+#include "query_progress/progress.h"
 
 // BEWARE: this exists in alarm-notify.sh
 #define DEFAULT_CLOUD_BASE_URL "https://app.netdata.cloud"

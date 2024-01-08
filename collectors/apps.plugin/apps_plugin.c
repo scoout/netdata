@@ -13,11 +13,15 @@
 #define APPS_PLUGIN_PROCESSES_FUNCTION_DESCRIPTION "Detailed information on the currently running processes."
 
 #define APPS_PLUGIN_FUNCTIONS() do { \
-        fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " \"processes\" %d \"%s\"\n", PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT, APPS_PLUGIN_PROCESSES_FUNCTION_DESCRIPTION); \
+        fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " \"processes\" %d \"%s\" \"top\" \"members\" %d\n", \
+                PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT, APPS_PLUGIN_PROCESSES_FUNCTION_DESCRIPTION,         \
+                RRDFUNCTIONS_PRIORITY_DEFAULT / 10); \
     } while(0)
 
 #define APPS_PLUGIN_GLOBAL_FUNCTIONS() do { \
-        fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " GLOBAL \"processes\" %d \"%s\"\n", PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT, APPS_PLUGIN_PROCESSES_FUNCTION_DESCRIPTION); \
+        fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " GLOBAL \"processes\" %d \"%s\" \"top\" \"members\" %d\n", \
+                PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT, APPS_PLUGIN_PROCESSES_FUNCTION_DESCRIPTION,                \
+                RRDFUNCTIONS_PRIORITY_DEFAULT / 10); \
     } while(0)
 
 // ----------------------------------------------------------------------------
@@ -704,7 +708,7 @@ int read_user_or_group_ids(struct user_or_group_ids *ids, struct timespec *last_
         else {
             if(unlikely(avl_insert(&ids->index, (avl_t *) user_or_group_id) != (void *) user_or_group_id)) {
                 netdata_log_error("INTERNAL ERROR: duplicate indexing of id during realloc");
-            };
+            }
 
             user_or_group_id->next = ids->root;
             ids->root = user_or_group_id;
@@ -1239,11 +1243,11 @@ cleanup:
 // each parameter is accessed only ONCE - so it is safe to pass function calls
 // or other macros as parameters
 
-#define incremental_rate(rate_variable, last_kernel_variable, new_kernel_value, collected_usec, last_collected_usec) { \
+#define incremental_rate(rate_variable, last_kernel_variable, new_kernel_value, collected_usec, last_collected_usec) do { \
         kernel_uint_t _new_tmp = new_kernel_value; \
         (rate_variable) = (_new_tmp - (last_kernel_variable)) * (USEC_PER_SEC * RATES_DETAIL) / ((collected_usec) - (last_collected_usec)); \
         (last_kernel_variable) = _new_tmp; \
-    }
+    } while(0)
 
 // the same macro for struct pid members
 #define pid_incremental_rate(type, var, value) \
@@ -3750,7 +3754,7 @@ static void send_collected_data_to_netdata(struct target *root, const char *type
     struct target *w;
 
     for (w = root; w ; w = w->next) {
-        if (unlikely(!w->exposed && !w->is_other))
+        if (unlikely(!w->exposed))
             continue;
 
         send_BEGIN(type, w->clean_name, "processes", dt);
@@ -3806,16 +3810,30 @@ static void send_collected_data_to_netdata(struct target *root, const char *type
 #endif
 
 #ifndef __FreeBSD__
-        send_BEGIN(type, w->clean_name, "uptime", dt);
-        send_SET("uptime", (global_uptime > w->starttime) ? (global_uptime - w->starttime) : 0);
-        send_END();
-
-        if (enable_detailed_uptime_charts) {
-            send_BEGIN(type, w->clean_name, "uptime_summary", dt);
-            send_SET("min", w->uptime_min);
-            send_SET("avg", w->processes > 0 ? w->uptime_sum / w->processes : 0);
-            send_SET("max", w->uptime_max);
+        if (w->processes == 0) {
+            send_BEGIN(type, w->clean_name, "uptime", dt);
+            send_SET("uptime", 0);
             send_END();
+
+            if (enable_detailed_uptime_charts) {
+                send_BEGIN(type, w->clean_name, "uptime_summary", dt);
+                send_SET("min", 0);
+                send_SET("avg", 0);
+                send_SET("max", 0);
+                send_END();
+            }
+        } else {
+            send_BEGIN(type, w->clean_name, "uptime", dt);
+            send_SET("uptime", (global_uptime > w->starttime) ? (global_uptime - w->starttime) : 0);
+            send_END();
+
+            if (enable_detailed_uptime_charts) {
+                send_BEGIN(type, w->clean_name, "uptime_summary", dt);
+                send_SET("min", w->uptime_min);
+                send_SET("avg", w->processes > 0 ? w->uptime_sum / w->processes : 0);
+                send_SET("max", w->uptime_max);
+                send_END();
+            }
         }
 #endif
 
@@ -3860,7 +3878,7 @@ static void send_charts_updates_to_netdata(struct target *root, const char *type
 
     if (debug_enabled) {
         for (w = root; w; w = w->next) {
-            if (unlikely(w->debug_enabled && !w->target && w->processes)) {
+            if (unlikely(!w->target && w->processes)) {
                 struct pid_on_target *pid_on_target;
                 fprintf(stderr, "apps.plugin: target '%s' has aggregated %u process(es):", w->name, w->processes);
                 for (pid_on_target = w->root_pid; pid_on_target; pid_on_target = pid_on_target->next) {
@@ -4227,7 +4245,7 @@ static int am_i_running_as_root() {
     return 0;
 }
 
-#ifdef HAVE_CAPABILITY
+#ifdef HAVE_SYS_CAPABILITY_H
 static int check_capabilities() {
     cap_t caps = cap_get_proc();
     if(!caps) {
@@ -4379,7 +4397,7 @@ static void apps_plugin_function_processes_help(const char *transaction) {
     buffer_json_add_array_item_double(wb, _tmp);                                                                \
 } while(0)
 
-static void function_processes(const char *transaction, char *function __maybe_unused, int timeout __maybe_unused, bool *cancelled __maybe_unused) {
+static void function_processes(const char *transaction, char *function __maybe_unused, usec_t *stop_monotonic_ut __maybe_unused, bool *cancelled __maybe_unused) {
     struct pid_stat *p;
 
     char *words[PLUGINSD_MAX_WORDS] = { NULL };
@@ -5234,24 +5252,10 @@ static void function_processes(const char *transaction, char *function __maybe_u
 static bool apps_plugin_exit = false;
 
 int main(int argc, char **argv) {
-    // debug_flags = D_PROCFILE;
-    stderror = stderr;
-
     clocks_init();
+    nd_log_initialize_for_external_plugins("apps.plugin");
 
     pagesize = (size_t)sysconf(_SC_PAGESIZE);
-
-    // set the name for logging
-    program_name = "apps.plugin";
-
-    // disable syslog for apps.plugin
-    error_log_syslog = 0;
-
-    // set errors flood protection to 100 logs per hour
-    error_log_errors_per_period = 100;
-    error_log_throttle_period = 3600;
-
-    log_set_global_severity_for_external_plugins();
 
     bool send_resource_usage = true;
     {
@@ -5307,7 +5311,7 @@ int main(int argc, char **argv) {
 
     if(!check_capabilities() && !am_i_running_as_root() && !check_proc_1_io()) {
         uid_t uid = getuid(), euid = geteuid();
-#ifdef HAVE_CAPABILITY
+#ifdef HAVE_SYS_CAPABILITY_H
         netdata_log_error("apps.plugin should either run as root (now running with uid %u, euid %u) or have special capabilities. "
                       "Without these, apps.plugin cannot report disk I/O utilization of other processes. "
                       "To enable capabilities run: sudo setcap cap_dac_read_search,cap_sys_ptrace+ep %s; "

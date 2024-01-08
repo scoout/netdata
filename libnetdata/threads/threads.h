@@ -18,6 +18,8 @@ typedef enum {
 #define netdata_thread_cleanup_push(func, arg) pthread_cleanup_push(func, arg)
 #define netdata_thread_cleanup_pop(execute) pthread_cleanup_pop(execute)
 
+void netdata_thread_set_tag(const char *tag);
+
 typedef pthread_t netdata_thread_t;
 
 struct netdata_static_thread {
@@ -56,6 +58,10 @@ struct netdata_static_thread {
 #define NETDATA_THREAD_TAG_MAX 100
 const char *netdata_thread_tag(void);
 int netdata_thread_tag_exists(void);
+
+#define THREAD_TAG_STREAM_RECEIVER "RCVR"
+#define THREAD_TAG_STREAM_SENDER "SNDR"
+
 
 size_t netdata_threads_init(void);
 void netdata_threads_init_after_fork(size_t stacksize);

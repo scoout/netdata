@@ -148,7 +148,7 @@ static void add_basic_mountinfo(struct basic_mountinfo **root, struct mountinfo 
 
     bmi->next = *root;
     *root = bmi;
-};
+}
 
 static void free_basic_mountinfo(struct basic_mountinfo *bmi)
 {
@@ -160,7 +160,7 @@ static void free_basic_mountinfo(struct basic_mountinfo *bmi)
 
         freez(bmi);
     }
-};
+}
 
 static void free_basic_mountinfo_list(struct basic_mountinfo *root)
 {
@@ -225,7 +225,7 @@ static void calculate_values_and_show_charts(
             m->st_space = rrdset_find_active_bytype_localhost("disk_space", disk);
             if(unlikely(!m->st_space || m->st_space->update_every != update_every)) {
                 char title[4096 + 1];
-                snprintfz(title, 4096, "Disk Space Usage");
+                snprintfz(title, sizeof(title) - 1, "Disk Space Usage");
                 m->st_space = rrdset_create_localhost(
                         "disk_space"
                         , disk
@@ -265,7 +265,7 @@ static void calculate_values_and_show_charts(
             m->st_inodes = rrdset_find_active_bytype_localhost("disk_inodes", disk);
             if(unlikely(!m->st_inodes) || m->st_inodes->update_every != update_every) {
                 char title[4096 + 1];
-                snprintfz(title, 4096, "Disk Files (inodes) Usage");
+                snprintfz(title, sizeof(title) - 1, "Disk Files (inodes) Usage");
                 m->st_inodes = rrdset_create_localhost(
                         "disk_inodes"
                         , disk
@@ -346,8 +346,6 @@ static inline void do_disk_space_stats(struct mountinfo *mi, int update_every) {
     struct mount_point_metadata *m = dictionary_get(dict_mountpoints, mi->mount_point);
     if(unlikely(!m)) {
         int slow = 0;
-        char var_name[4096 + 1];
-        snprintfz(var_name, 4096, "plugin:proc:diskspace:%s", mi->mount_point);
 
         int def_space = config_get_boolean_ondemand(CONFIG_SECTION_DISKSPACE, "space usage for all disks", CONFIG_BOOLEAN_AUTO);
         int def_inodes = config_get_boolean_ondemand(CONFIG_SECTION_DISKSPACE, "inodes usage for all disks", CONFIG_BOOLEAN_AUTO);
@@ -398,8 +396,16 @@ static inline void do_disk_space_stats(struct mountinfo *mi, int update_every) {
                 slow = 1;
         }
 
-        do_space = config_get_boolean_ondemand(var_name, "space usage", def_space);
-        do_inodes = config_get_boolean_ondemand(var_name, "inodes usage", def_inodes);
+        char var_name[4096 + 1];
+        snprintfz(var_name, 4096, "plugin:proc:diskspace:%s", mi->mount_point);
+
+        do_space = def_space;
+        do_inodes = def_inodes;
+
+        if (config_exists(var_name, "space usage"))
+            do_space = config_get_boolean_ondemand(var_name, "space usage", def_space);
+        if (config_exists(var_name, "inodes usage"))
+            do_inodes = config_get_boolean_ondemand(var_name, "inodes usage", def_inodes);
 
         struct mount_point_metadata mp = {
                 .do_space = do_space,
@@ -630,12 +636,16 @@ static void diskspace_main_cleanup(void *ptr) {
 #error WORKER_UTILIZATION_MAX_JOB_TYPES has to be at least 3
 #endif
 
-int diskspace_function_mount_points(BUFFER *wb, int timeout __maybe_unused, const char *function __maybe_unused,
-        void *collector_data __maybe_unused,
-        rrd_function_result_callback_t result_cb, void *result_cb_data,
-        rrd_function_is_cancelled_cb_t is_cancelled_cb, void *is_cancelled_cb_data,
-        rrd_function_register_canceller_cb_t register_canceller_cb __maybe_unused,
-        void *register_canceller_cb_data __maybe_unused) {
+int diskspace_function_mount_points(uuid_t *transaction __maybe_unused, BUFFER *wb,
+                                    usec_t *stop_monotonic_ut __maybe_unused, const char *function __maybe_unused,
+                                    void *collector_data __maybe_unused,
+                                    rrd_function_result_callback_t result_cb, void *result_cb_data,
+                                    rrd_function_progress_cb_t progress_cb __maybe_unused, void *progress_cb_data __maybe_unused,
+                                    rrd_function_is_cancelled_cb_t is_cancelled_cb, void *is_cancelled_cb_data,
+                                    rrd_function_register_canceller_cb_t register_canceller_cb __maybe_unused,
+                                    void *register_canceller_cb_data __maybe_unused,
+                                    rrd_function_register_progresser_cb_t register_progresser_cb __maybe_unused,
+                                    void *register_progresser_cb_data __maybe_unused) {
 
     buffer_flush(wb);
     wb->content_type = CT_APPLICATION_JSON;
@@ -859,7 +869,9 @@ void *diskspace_main(void *ptr) {
     worker_register_job_name(WORKER_JOB_CLEANUP, "cleanup");
 
     rrd_collector_started();
-    rrd_function_add(localhost, NULL, "mount-points", 10, RRDFUNCTIONS_DISKSPACE_HELP, true, diskspace_function_mount_points, NULL);
+    rrd_function_add(localhost, NULL, "mount-points", 10, RRDFUNCTIONS_PRIORITY_DEFAULT, RRDFUNCTIONS_DISKSPACE_HELP,
+                     "top", HTTP_ACCESS_ANY,
+                     true, diskspace_function_mount_points, NULL);
 
     netdata_thread_cleanup_push(diskspace_main_cleanup, ptr);
 
